@@ -161,7 +161,7 @@ function initLayout() {
 resizeCanvas();   // let 변수 선언 완료 후 초기 실행
 
 const MAX_LIVES = 3;
-const GAME_SEC  = 75;   // 점수 여유를 위해 75초
+/* 시간 제한 없음 — 스톱워치로 완성 시간을 잼 */
 
 // ── 게임 상태 ───────────────────────────────────────────────
 let state        = 'menu';
@@ -171,7 +171,7 @@ let selectedIdx  = 2;
 let dots    = [];        // 모양 위의 점 배열 [{x,y}]
 let hitSet  = new Set(); // 이미 찍은 점의 인덱스 집합
 let lives        = MAX_LIVES;
-let timeLeft     = GAME_SEC;
+let elapsedTime  = 0;   // 스톱워치: 게임 시작부터 경과한 초 (0.1초 단위로 증가)
 let finalScore   = 0;
 let cracks       = [];
 let particles    = [];
@@ -527,11 +527,15 @@ function drawHUD(){
   }
   ctx.globalAlpha=1;
 
-  // 타이머
+  // 스톱워치 — 경과 시간 표시 (분:초 or 초.소수점)
   ctx.font='bold 16px Arial';
-  ctx.fillStyle=timeLeft<=10?C.red:C.gold;
+  ctx.fillStyle=C.gold;
   ctx.textAlign='right';
-  ctx.fillText(`${Math.ceil(timeLeft)}s`,BASE_W-bx+45,by-9);
+  const et=elapsedTime;
+  const timerTxt = et<60
+    ? `${et.toFixed(1)}s`
+    : `${Math.floor(et/60)}:${String(Math.floor(et%60)).padStart(2,'0')}`;
+  ctx.fillText(timerTxt, BASE_W-bx+45, by-9);
 
   // 카운트 / 전체
   ctx.font='bold 13px Arial'; ctx.fillStyle='rgba(255,255,255,0.55)';
@@ -610,14 +614,15 @@ function addCrack(tx,ty){
 function startGame(){
   dots=makePoints(currentShape);
   hitSet=new Set();
-  lives=MAX_LIVES; timeLeft=GAME_SEC; finalScore=0;
+  lives=MAX_LIVES; elapsedTime=0; finalScore=0;
   cracks=[]; particles=[]; shakeT=0;
   needleX=-999; needleY=-999; needleAlpha=0;
   wrongFlash=0;
 
   if(timerID) clearInterval(timerID);
+  /* 스톱워치: 0.1초마다 elapsedTime 증가 (시간 초과 없음) */
   timerID=setInterval(()=>{
-    if(state==='playing'){ timeLeft-=0.1; if(timeLeft<=0){timeLeft=0;endGame(false);} }
+    if(state==='playing') elapsedTime=Math.round((elapsedTime+0.1)*10)/10;
   },100);
 
   countdownT=performance.now();
@@ -628,9 +633,10 @@ function endGame(success){
   if(timerID){clearInterval(timerID);timerID=null;}
   if(success){
     const acc=hitSet.size/dots.length;
-    finalScore=Math.round(hitSet.size*15+timeLeft*10+acc*250);
-    // 완성까지 걸린 시간 (소수점 1자리, ex: 23.4초)
-    pendingSaveTime = Math.round((GAME_SEC - timeLeft) * 10) / 10;
+    /* 점수 = 기본점(점 개수×12) + 완성도 보너스 + 빠른 완성 보너스
+       빠를수록 높은 점수: 8000 / (경과시간 + 2) */
+    finalScore=Math.round(hitSet.size*12 + acc*200 + Math.round(8000/(elapsedTime+2)));
+    pendingSaveTime = elapsedTime;   // 스톱워치 기록 저장
     spawnCelebration();
     state='success';
   } else { state='failed'; }
@@ -872,7 +878,7 @@ function drawSuccess(){
   ctx.font='bold 28px Arial'; ctx.fillStyle=C.gold;
   ctx.fillText(`${finalScore}점`,BASE_W/2,BASE_H*0.675);
   ctx.font='14px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
-  ctx.fillText(`남은 시간 ${Math.ceil(timeLeft)}초  ·  ${hitSet.size}개 완성`,BASE_W/2,BASE_H*0.73);
+  ctx.fillText(`⏱ ${elapsedTime.toFixed(1)}초  ·  ${hitSet.size}개 완성`,BASE_W/2,BASE_H*0.73);
   drawBtn(BASE_W/2,BASE_H*0.86,210,50,'💾 저장 & 랭킹 보기',C.candy,'#fff');
   drawBtn(BASE_W/2,BASE_H*0.93,210,38,'🔄 다시 하기','#3d1a00',C.gold);
   ctx.textAlign='left';
