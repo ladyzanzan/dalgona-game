@@ -123,9 +123,57 @@ const C = {
 
 // ── 모양 설정 ───────────────────────────────────────────────
 const SHAPES    = ['circle','triangle','star','heart','umbrella'];
-const SHAPE_KO  = { circle:'원', triangle:'삼각형', star:'별', heart:'하트', umbrella:'우산' };
+
 const SHAPE_ICO = { circle:'⭕', triangle:'▲', star:'⭐', heart:'❤️', umbrella:'☂️' };
 const SHAPE_DIF = { circle:1, triangle:2, star:4, heart:3, umbrella:4 };
+
+/* ── 다국어 번역 (KO / EN) ────────────────────────────────── */
+const T = {
+  ko: {
+    title: '달고나', subtitle: '🍬 바늘로 찍기 게임 🍬',
+    gameHint: '달고나 선 위의 점을 찍어 모양을 완성하세요!',
+    bestRecord: '🏆 최고 기록',
+    startBtn: '▶  게임 시작',  rankBtn: '🏆  랭킹 보드',
+    selectTitle: '모양 선택',   selectSub: '찍고 싶은 달고나 모양을 고르세요',
+    goBtn: '✓  시작하기',       backBtn: '← 뒤로',
+    ready: '준비!',
+    successTxt: '🎉 성공!',
+    pts: '점',  timeSfx: '초',  doneTxt: '개 완성',
+    saveRankBtn: '💾 저장 & 랭킹 보기', retryBtn: '🔄 다시 하기',
+    failedTxt: '💥 실패!',
+    retryAgain: '🔄 다시 도전!', changeShape: '모양 바꾸기', mainMenu: '메인 메뉴',
+    lbTitle: '🏆 랭킹 보드',
+    scoreTop: '🏅  최고 점수  TOP 5', speedTop: '⚡  최단 완성  TOP 5',
+    noRecord: '아직 기록 없음',  backMenu: '← 메인 메뉴',
+    overlayTitle: '🏆 점수 저장', overlayDesc: '랭킹 보드에 남길 닉네임을 입력하세요',
+    namePH: '닉네임 (최대 8자)', saveBtn: '💾 저장하기', skipBtn: '저장 안 함',
+    touchHint: '누른 채 조준 → 손 떼면 찍힘',
+    dotsPts: n => `${n}점`,
+    shapes: { circle:'원', triangle:'삼각형', star:'별', heart:'하트', umbrella:'우산' },
+  },
+  en: {
+    title: 'Dalgona', subtitle: '🍬 Needle Picking Game 🍬',
+    gameHint: 'Pick all the dots along the shape outline!',
+    bestRecord: '🏆 Best',
+    startBtn: '▶  Start Game',  rankBtn: '🏆  Leaderboard',
+    selectTitle: 'Choose Shape', selectSub: 'Pick your dalgona candy shape',
+    goBtn: "✓  Let's Go",        backBtn: '← Back',
+    ready: 'Ready!',
+    successTxt: '🎉 Success!',
+    pts: 'pts',  timeSfx: 's',  doneTxt: ' done',
+    saveRankBtn: '💾 Save & Rankings', retryBtn: '🔄 Play Again',
+    failedTxt: '💥 Failed!',
+    retryAgain: '🔄 Try Again!', changeShape: 'Change Shape', mainMenu: 'Main Menu',
+    lbTitle: '🏆 Leaderboard',
+    scoreTop: '🏅  Top Score  TOP 5', speedTop: '⚡  Fastest  TOP 5',
+    noRecord: 'No records yet',  backMenu: '← Main Menu',
+    overlayTitle: '🏆 Save Score', overlayDesc: 'Enter a nickname for the leaderboard',
+    namePH: 'Nickname (max 8)', saveBtn: '💾 Save', skipBtn: 'Skip',
+    touchHint: 'Hold & aim → lift to pick',
+    dotsPts: n => `${n}pts`,
+    shapes: { circle:'Circle', triangle:'Triangle', star:'Star', heart:'Heart', umbrella:'Umbrella' },
+  },
+};
 
 /* 점 개수 — 많을수록 더 세밀한 찍기 필요 */
 const SHAPE_N   = { circle:60, triangle:54, star:80, heart:70, umbrella:64 };
@@ -183,6 +231,9 @@ let pendingSaveScore = 0;
 let pendingSaveShape = '';
 let pendingSaveTime  = 0;   // 완성까지 걸린 시간 (초)
 let timerID = null;
+
+/* 언어 설정 — localStorage에 저장해 다음 방문 시에도 유지 */
+let lang = localStorage.getItem('dalgona_lang') || 'ko';  // 'ko' | 'en'
 
 // ── 로컬 랭킹 ───────────────────────────────────────────────
 /* 저장 구조: { name, shape, score, time, date }
@@ -453,7 +504,7 @@ function drawNeedle() {
   ctx.stroke();
 
   ctx.restore();
-  needleAlpha *= 0.92;   // 손 뗀 후 서서히 사라짐
+  needleAlpha *= 0.96;   // 손 뗀 후 서서히 사라짐 (약 2초 — 다음 조준 전까지 위치 확인 가능)
 }
 
 // ── 핵심 시각화: 점·궤적·바늘 ─────────────────────────────
@@ -542,10 +593,15 @@ function drawHUD(){
   ctx.textAlign='center';
   ctx.fillText(`${hitSet.size} / ${dots.length}`,BASE_W/2,by-9);
 
-  // 모양 이름
+  // 모양 이름 + 조작 힌트
   ctx.font='13px Arial'; ctx.fillStyle='rgba(255,200,100,0.6)';
   ctx.textBaseline='bottom';
-  ctx.fillText(`${SHAPE_ICO[currentShape]} ${SHAPE_KO[currentShape]}`,BASE_W/2,BASE_H-8);
+  ctx.fillText(`${SHAPE_ICO[currentShape]} ${T[lang].shapes[currentShape]}`,BASE_W/2,BASE_H-8);
+  // 모바일 힌트 (터치 감지 시에만 표시)
+  if('ontouchstart' in window){
+    ctx.font='11px Arial'; ctx.fillStyle='rgba(255,255,255,0.22)';
+    ctx.fillText(T[lang].touchHint,BASE_W/2,BASE_H-24);
+  }
   ctx.textBaseline='alphabetic';
 
   // 잘못 찍었을 때 빨간 테두리 플래시
@@ -693,6 +749,9 @@ function gameTap(tx,ty){
 }
 
 function menuTap(tx,ty){
+  // KO|EN 토글 — 우상단 (각 레이블 탭 감지)
+  if(Math.abs(tx-(BASE_W-52))<16 && Math.abs(ty-20)<14){ lang='ko'; localStorage.setItem('dalgona_lang','ko'); updateOverlayLang(); return; }
+  if(Math.abs(tx-(BASE_W-24))<16 && Math.abs(ty-20)<14){ lang='en'; localStorage.setItem('dalgona_lang','en'); updateOverlayLang(); return; }
   if(inBtn(tx,ty,BASE_W/2,520,220,54)){state='select';selectedIdx=SHAPES.indexOf(currentShape);}
   if(inBtn(tx,ty,BASE_W/2,592,220,44)){state='leaderboard';}
 }
@@ -726,7 +785,19 @@ function lbTap(tx,ty){
 // ── 닉네임 오버레이 ─────────────────────────────────────────
 const overlay=document.getElementById('nameOverlay');
 const nameInput=document.getElementById('nameInput');
-function showNameOverlay(){ nameInput.value=''; overlay.classList.add('active'); nameInput.focus(); }
+
+/* HTML 오버레이 텍스트를 현재 언어로 업데이트 */
+function updateOverlayLang(){
+  const tr = T[lang];
+  document.querySelector('#nameOverlay h2').textContent = tr.overlayTitle;
+  document.querySelector('#nameOverlay p').textContent  = tr.overlayDesc;
+  nameInput.placeholder = tr.namePH;
+  document.getElementById('saveName').textContent = tr.saveBtn;
+  document.getElementById('skipSave').textContent = tr.skipBtn;
+}
+updateOverlayLang();   // 초기 적용
+
+function showNameOverlay(){ nameInput.value=''; updateOverlayLang(); overlay.classList.add('active'); nameInput.focus(); }
 function hideNameOverlay(){ overlay.classList.remove('active'); }
 
 document.getElementById('saveName').addEventListener('click',()=>{
@@ -746,14 +817,31 @@ function drawMenu(ts){
     drawCandy(x,y,r); ctx.restore();
   });
 
+  // KO | EN 언어 토글 — 우상단
+  ctx.save();
+  const togX=BASE_W-38, togY=20;
+  ['KO','EN'].forEach((lc,i)=>{
+    const tx2 = togX + (i===0?-14:14);
+    ctx.globalAlpha = lang===lc.toLowerCase() ? 1 : 0.32;
+    ctx.font = lang===lc.toLowerCase() ? 'bold 13px Arial' : '12px Arial';
+    ctx.fillStyle = C.gold;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(lc, tx2, togY);
+  });
+  ctx.globalAlpha=0.35; ctx.fillStyle=C.gold;
+  ctx.font='12px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('|', togX, togY);
+  ctx.restore();
+
+  const tr=T[lang];
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
   ctx.font='bold 56px Arial';
   ctx.shadowColor=C.candy; ctx.shadowBlur=22; ctx.fillStyle=C.gold;
-  ctx.fillText('달고나',BASE_W/2,130+Math.sin(ts*0.0011)*5);
+  ctx.fillText(tr.title,BASE_W/2,130+Math.sin(ts*0.0011)*5);
   ctx.shadowBlur=0;
 
   ctx.font='19px Arial'; ctx.fillStyle='rgba(255,200,100,0.72)';
-  ctx.fillText('🍬 바늘로 찍기 게임 🍬',BASE_W/2,166);
+  ctx.fillText(tr.subtitle,BASE_W/2,166);
 
   // 데모 달고나
   drawCandy(BASE_W/2,322,108);
@@ -764,16 +852,17 @@ function drawMenu(ts){
 
   // 설명 문구
   ctx.font='13px Arial'; ctx.fillStyle='rgba(255,255,255,0.4)';
-  ctx.fillText('순서대로 점을 찍어 모양을 완성하세요!',BASE_W/2,440);
+  ctx.fillText(tr.gameHint,BASE_W/2,440);
 
   const lb=getLB();
   if(lb.length>0){
+    const topScore=[...lb].sort((a,b)=>b.score-a.score)[0];
     ctx.font='14px Arial'; ctx.fillStyle='rgba(255,200,100,0.6)';
-    ctx.fillText(`🏆 최고 기록: ${lb[0].score}점  (${lb[0].name})`,BASE_W/2,464);
+    ctx.fillText(`${tr.bestRecord}: ${topScore.score}${tr.pts}  (${topScore.name})`,BASE_W/2,464);
   }
 
-  drawBtn(BASE_W/2,520,220,54,'▶  게임 시작',C.candy,'#fff');
-  drawBtn(BASE_W/2,592,220,44,'🏆  랭킹 보드','#3d1a00',C.gold);
+  drawBtn(BASE_W/2,520,220,54,tr.startBtn,C.candy,'#fff');
+  drawBtn(BASE_W/2,592,220,44,tr.rankBtn,'#3d1a00',C.gold);
 
   // 제작자 크레딧
   ctx.font='12px Arial'; ctx.fillStyle='rgba(255,200,100,0.35)';
@@ -796,12 +885,13 @@ function drawShapeGuideAt(shape,cx,cy,sz){
 
 // ── 스크린: 모양 선택 ───────────────────────────────────────
 function drawSelect(){
+  const tr=T[lang];
   ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
   ctx.font='bold 25px Arial'; ctx.fillStyle=C.gold;
-  ctx.fillText('모양 선택',BASE_W/2,54);
+  ctx.fillText(tr.selectTitle,BASE_W/2,54);
   ctx.font='13px Arial'; ctx.fillStyle='rgba(255,200,100,0.5)';
-  ctx.fillText('찍고 싶은 달고나 모양을 고르세요',BASE_W/2,78);
+  ctx.fillText(tr.selectSub,BASE_W/2,78);
 
   SHAPES.forEach((shape,i)=>{
     const col=i<4?i%2:0, row=i<4?Math.floor(i/2):2;
@@ -815,16 +905,16 @@ function drawSelect(){
     ctx.font='32px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(SHAPE_ICO[shape],cx,cy-12);
     ctx.font='bold 14px Arial'; ctx.fillStyle=C.gold; ctx.textBaseline='alphabetic';
-    ctx.fillText(SHAPE_KO[shape],cx,cy+22);
+    ctx.fillText(tr.shapes[shape],cx,cy+22);
     ctx.font='11px Arial'; ctx.fillStyle='rgba(255,200,100,0.55)';
     const diff=SHAPE_DIF[shape];
     ctx.fillText('⭐'.repeat(diff)+'☆'.repeat(5-diff),cx,cy+42);
     ctx.font='11px Arial'; ctx.fillStyle='rgba(255,255,255,0.3)';
-    ctx.fillText(`${SHAPE_N[shape]}점`,cx,cy+58);
+    ctx.fillText(tr.dotsPts(SHAPE_N[shape]),cx,cy+58);
   });
 
-  drawBtn(BASE_W/2,BASE_H-68,200,50,'✓  시작하기',C.candy,'#fff');
-  drawBtn(BASE_W/2,BASE_H-18,120,34,'← 뒤로','#3d1a00','rgba(255,200,100,0.7)');
+  drawBtn(BASE_W/2,BASE_H-68,200,50,tr.goBtn,C.candy,'#fff');
+  drawBtn(BASE_W/2,BASE_H-18,120,34,tr.backBtn,'#3d1a00','rgba(255,200,100,0.7)');
   ctx.textAlign='left';
 }
 
@@ -840,7 +930,7 @@ function drawCountdown(ts){
   ctx.translate(BASE_W/2,BASE_H/2); ctx.scale(sc,sc);
   ctx.font='bold 96px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillStyle='#ffcc00'; ctx.shadowColor='#ff8800'; ctx.shadowBlur=28;
-  ctx.fillText(n===4?'준비!':String(n),0,0);
+  ctx.fillText(n===4?T[lang].ready:String(n),0,0);
   ctx.restore();
 }
 
@@ -871,16 +961,17 @@ function drawSuccess(){
   ctx.font='50px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(SHAPE_ICO[currentShape],CANDY_CX,cy);
   ctx.textBaseline='alphabetic';
+  const trS=T[lang];
   ctx.font='bold 34px Arial'; ctx.fillStyle=C.green;
   ctx.shadowColor=C.green; ctx.shadowBlur=20; ctx.textAlign='center';
-  ctx.fillText('🎉 성공!',BASE_W/2,BASE_H*0.6);
+  ctx.fillText(trS.successTxt,BASE_W/2,BASE_H*0.6);
   ctx.shadowBlur=0;
   ctx.font='bold 28px Arial'; ctx.fillStyle=C.gold;
-  ctx.fillText(`${finalScore}점`,BASE_W/2,BASE_H*0.675);
+  ctx.fillText(`${finalScore}${trS.pts}`,BASE_W/2,BASE_H*0.675);
   ctx.font='14px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
-  ctx.fillText(`⏱ ${elapsedTime.toFixed(1)}초  ·  ${hitSet.size}개 완성`,BASE_W/2,BASE_H*0.73);
-  drawBtn(BASE_W/2,BASE_H*0.86,210,50,'💾 저장 & 랭킹 보기',C.candy,'#fff');
-  drawBtn(BASE_W/2,BASE_H*0.93,210,38,'🔄 다시 하기','#3d1a00',C.gold);
+  ctx.fillText(`⏱ ${elapsedTime.toFixed(1)}${trS.timeSfx}  ·  ${hitSet.size}${trS.doneTxt}`,BASE_W/2,BASE_H*0.73);
+  drawBtn(BASE_W/2,BASE_H*0.86,210,50,trS.saveRankBtn,C.candy,'#fff');
+  drawBtn(BASE_W/2,BASE_H*0.93,210,38,trS.retryBtn,'#3d1a00',C.gold);
   ctx.textAlign='left';
 }
 
@@ -891,14 +982,15 @@ function drawFailed(){
   drawCandy(0,0,CANDY_R*0.82); drawCracks();
   ctx.font='38px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText('💔',0,0); ctx.restore();
+  const trF=T[lang];
   ctx.font='bold 36px Arial'; ctx.fillStyle=C.red;
   ctx.shadowColor=C.red; ctx.shadowBlur=16; ctx.textAlign='center';
-  ctx.fillText('💥 실패!',BASE_W/2,BASE_H*0.6); ctx.shadowBlur=0;
+  ctx.fillText(trF.failedTxt,BASE_W/2,BASE_H*0.6); ctx.shadowBlur=0;
   ctx.font='15px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
-  ctx.fillText(`${hitSet.size} / ${dots.length} 완료`,BASE_W/2,BASE_H*0.675);
-  drawBtn(BASE_W/2,BASE_H*0.77,210,50,'🔄 다시 도전!',C.candy,'#fff');
-  drawBtn(BASE_W/2,BASE_H*0.86,210,42,'모양 바꾸기','#3d1a00',C.gold);
-  drawBtn(BASE_W/2,BASE_H*0.94,210,36,'메인 메뉴','#1a0800','rgba(255,200,100,0.5)');
+  ctx.fillText(`${hitSet.size} / ${dots.length} ${trF.doneTxt.trim()}`,BASE_W/2,BASE_H*0.675);
+  drawBtn(BASE_W/2,BASE_H*0.77,210,50,trF.retryAgain,C.candy,'#fff');
+  drawBtn(BASE_W/2,BASE_H*0.86,210,42,trF.changeShape,'#3d1a00',C.gold);
+  drawBtn(BASE_W/2,BASE_H*0.94,210,36,trF.mainMenu,'#1a0800','rgba(255,200,100,0.5)');
   ctx.textAlign='left';
 }
 
@@ -908,10 +1000,11 @@ function drawLeaderboard(){
   ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
 
+  const trL=T[lang];
   // 타이틀
   ctx.font='bold 24px Arial'; ctx.fillStyle=C.gold;
   ctx.shadowColor=C.candy; ctx.shadowBlur=14;
-  ctx.fillText('🏆 랭킹 보드',BASE_W/2,46);
+  ctx.fillText(trL.lbTitle,BASE_W/2,46);
   ctx.shadowBlur=0;
 
   const scoreTop = getScoreTop5();
@@ -929,7 +1022,7 @@ function drawLeaderboard(){
 
     if(entries.length===0){
       ctx.font='13px Arial'; ctx.fillStyle='rgba(255,255,255,0.3)';
-      ctx.fillText('아직 기록 없음', BASE_W/2, startY+ROW_H);
+      ctx.fillText(trL.noRecord, BASE_W/2, startY+ROW_H);
       return;
     }
 
@@ -955,7 +1048,7 @@ function drawLeaderboard(){
 
       // 모양 + 날짜
       ctx.font='11px Arial'; ctx.fillStyle='rgba(255,200,100,0.45)';
-      ctx.fillText(`${SHAPE_ICO[e.shape]||''} ${SHAPE_KO[e.shape]||''}  ${e.date}`, 62, ry+28);
+      ctx.fillText(`${SHAPE_ICO[e.shape]||''} ${trL.shapes[e.shape]||''}  ${e.date}`, 62, ry+28);
 
       // 값 (점수 or 시간)
       ctx.textAlign='right';
@@ -967,17 +1060,17 @@ function drawLeaderboard(){
 
   // 섹션 1 — 점수 TOP 5
   const sec1Y = 80;
-  drawSection('🏅  최고 점수  TOP 5', scoreTop, sec1Y,
-              e => e.score, '점');
+  drawSection(trL.scoreTop, scoreTop, sec1Y,
+              e => e.score, trL.pts);
 
   // 섹션 2 — 속도 TOP 5
   const sec2Y = sec1Y + 26 + 5 * ROW_H + 18;
-  drawSection('⚡  최단 완성  TOP 5', speedTop, sec2Y,
-              e => e.time, '초');
+  drawSection(trL.speedTop, speedTop, sec2Y,
+              e => e.time, trL.timeSfx);
 
   // 메인 메뉴 버튼
   const btnY = sec2Y + 26 + 5 * ROW_H + 28;
-  drawBtn(BASE_W/2, btnY, 180, 44, '← 메인 메뉴', '#3d1a00', C.gold);
+  drawBtn(BASE_W/2, btnY, 180, 44, trL.backMenu, '#3d1a00', C.gold);
 
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
@@ -993,26 +1086,41 @@ function getXY(e){
   return {x, y};
 }
 /* 탭/클릭 — 실제 게임 입력 */
+/* ── 터치 메카닉 (모바일) ─────────────────────────────────────
+   PC  : mousemove로 바늘 미리보기 → mousedown으로 히트 판정 (기존 유지)
+   모바일: touchstart/touchmove로 바늘 조준 → touchend(손 뗄 때)에 히트 판정
+   → 손가락을 올리면 바늘이 나타나고, 드래그로 정확히 조준한 뒤
+     손을 떼는 순간 찍힘. 바늘 끝이 손가락 위에 표시되므로 드래그 중에도 보임. */
+
+/* touchstart: 바늘 즉시 표시 (히트 판정 없음 — 아직 조준 중) */
 canvas.addEventListener('touchstart',e=>{
   e.preventDefault();
   const{x,y}=getXY(e);
-  needleX=x; needleY=y; needleAlpha=1.0;  // 즉시 바늘 표시
-  handleTap(x,y);
+  needleX=x; needleY=y; needleAlpha=1.0;
 },{passive:false});
 
+/* touchmove: 드래그하며 조준 — 실시간 바늘 업데이트 */
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const{x,y}=getXY(e);
+  needleX=x; needleY=y; needleAlpha=1.0;
+},{passive:false});
+
+/* touchend: 손 떼는 순간 히트 판정 (e.touches는 비어있으므로 저장된 위치 사용) */
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  handleTap(needleX, needleY);
+},{passive:false});
+
+/* touchcancel: 전화 수신 등 — 판정 없이 바늘만 유지 */
+canvas.addEventListener('touchcancel',e=>{ e.preventDefault(); },{passive:false});
+
+/* ── 마우스 (PC) ─────────────────────────────────────────────
+   mousemove로 바늘 미리보기 → mousedown으로 히트 판정 (변경 없음) */
 canvas.addEventListener('mousedown',e=>{
   const{x,y}=getXY(e);
   handleTap(x,y);
 });
-
-/* 이동 — 바늘 위치만 업데이트 (게임 입력 없음) */
-canvas.addEventListener('touchmove',e=>{
-  e.preventDefault();
-  if(state==='playing'){
-    const{x,y}=getXY(e);
-    needleX=x; needleY=y; needleAlpha=1.0;
-  }
-},{passive:false});
 
 canvas.addEventListener('mousemove',e=>{
   if(state==='playing'){
