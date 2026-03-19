@@ -71,17 +71,26 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx    = canvas.getContext('2d');
 
-const BASE_W = 400, BASE_H = 700;
+/* BASE_W는 가상 캔버스 기준 너비 (고정).
+   BASE_H는 실제 화면 비율에 맞게 동적으로 계산됨.
+   scale은 "가상 1px = 실제 몇 px"인지를 나타냄. */
+let BASE_W = 400, BASE_H = 700;
 let scale = 1;
 
 function resizeCanvas() {
-  scale = Math.min(window.innerWidth / BASE_W, window.innerHeight / BASE_H);
-  canvas.width  = Math.floor(BASE_W * scale);
-  canvas.height = Math.floor(BASE_H * scale);
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  // 너비 기준으로 꽉 채움 → 달고나가 화면 크기에 비례해서 커짐
+  scale  = W / BASE_W;
+  BASE_H = Math.ceil(H / scale);   // 실제 화면 비율대로 가상 높이 결정
+  canvas.width  = W;
+  canvas.height = H;
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  // 캔버스 크기가 바뀔 때 게임 요소 위치도 재계산
+  initLayout();
 }
 window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
+// ※ 초기 호출은 아래 let 변수 선언 후에 실행 (temporal dead zone 방지)
 
 // ── 팔레트 ──────────────────────────────────────────────────
 const C = {
@@ -105,15 +114,35 @@ const SHAPE_DIF = { circle:1, triangle:2, star:4, heart:3, umbrella:4 };
 /* 점 개수 — 많을수록 더 세밀한 찍기 필요 */
 const SHAPE_N   = { circle:60, triangle:54, star:80, heart:70, umbrella:64 };
 
-const CANDY_CX = BASE_W / 2;
-const CANDY_CY = BASE_H * 0.44;
-const CANDY_R  = 128;
-const SHAPE_SZ = 68;
+/* 게임 요소 위치/크기 — initLayout()에서 화면 크기에 맞게 계산 */
+let CANDY_CX = BASE_W / 2;
+let CANDY_CY = BASE_H * 0.40;
+let CANDY_R  = 148;   // BASE_W * 0.37
+let SHAPE_SZ = 77;    // CANDY_R * 0.52
 
-/* 인식 반지름: 현재 점에서 이 거리 안에 찍어야 성공 */
-const HIT_R_BASE = { circle:22, triangle:20, star:16, heart:18, umbrella:18 };
-/* 이 거리보다 멀리 찍으면 균열 */
-const WRONG_R   = 24;
+/* 인식 반지름 — SHAPE_SZ에 비례 (initLayout에서 재계산) */
+let HIT_R_BASE = { circle:24, triangle:22, star:18, heart:20, umbrella:20 };
+let WRONG_R = 26;
+
+/* 화면 크기에 맞춰 레이아웃 재계산 */
+function initLayout() {
+  CANDY_CX = BASE_W / 2;
+  CANDY_CY = BASE_H * 0.40;          // 살짝 위로 — 엄지가 가리지 않도록
+  CANDY_R  = Math.round(BASE_W * 0.37);  // 화면 너비의 74%가 달고나 지름
+  SHAPE_SZ = Math.round(CANDY_R * 0.52);
+  // 인식 반지름도 SHAPE_SZ에 비례
+  const hr = SHAPE_SZ / 68;
+  HIT_R_BASE = {
+    circle:   Math.round(22 * hr),
+    triangle: Math.round(20 * hr),
+    star:     Math.round(16 * hr),
+    heart:    Math.round(18 * hr),
+    umbrella: Math.round(18 * hr),
+  };
+  WRONG_R = Math.round(24 * hr);
+}
+
+resizeCanvas();   // let 변수 선언 완료 후 초기 실행
 
 const MAX_LIVES = 3;
 const GAME_SEC  = 75;   // 점수 여유를 위해 75초
@@ -123,8 +152,8 @@ let state        = 'menu';
 let currentShape = 'star';
 let selectedIdx  = 2;
 
-let dots         = [];      // 모양 위의 점 배열 [{x,y}]
-let currentDotIdx = 0;      // 지금 찍어야 할 점 인덱스
+let dots    = [];        // 모양 위의 점 배열 [{x,y}]
+let hitSet  = new Set(); // 이미 찍은 점의 인덱스 집합
 let lives        = MAX_LIVES;
 let timeLeft     = GAME_SEC;
 let finalScore   = 0;
@@ -326,87 +355,91 @@ function drawShapeGuide(shape){
   ctx.stroke(); ctx.setLineDash([]); ctx.restore();
 }
 
+// ── 인접 여부 판단 ──────────────────────────────────────────
+/* 첫 탭은 어디서나 가능. 이후엔 이미 찍은 점의 바로 옆(±1 인덱스)만 허용.
+   원·별·하트처럼 닫힌 도형은 끝과 시작도 이어짐(wrap). */
+const CLOSED_SHAPES = new Set(['circle','star','heart','triangle']);
+
+function isAvailable(idx) {
+  if(hitSet.size === 0) return true;   // 첫 탭 — 아무 데나
+  const n = dots.length;
+  for(const hi of hitSet) {
+    let diff = Math.abs(idx - hi);
+    if(CLOSED_SHAPES.has(currentShape)) diff = Math.min(diff, n - diff);
+    if(diff <= 1) return true;         // 인접 점
+  }
+  return false;
+}
+
 // ── 핵심 시각화: 점·궤적·바늘 ─────────────────────────────
 function drawDotsAndTrail(ts) {
-  const done = currentDotIdx;   // 0 ~ done-1 이 완료됨
   const total = dots.length;
+  const pulse = 0.55 + 0.45 * Math.sin(ts * 0.006);
 
-  /* ① 완료된 궤적 — 황금색 선 */
-  if(done > 1){
+  /* ① 찍힌 점들 사이 황금 궤적선 — 인덱스 순서대로 연결 */
+  if(hitSet.size > 1){
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(dots[0].x, dots[0].y);
-    for(let i=1;i<done;i++) ctx.lineTo(dots[i].x, dots[i].y);
+    // 연속 구간 찾아서 선으로 연결
+    const sorted = [...hitSet].sort((a,b)=>a-b);
     ctx.strokeStyle='rgba(255,200,0,0.85)';
     ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.lineJoin='round';
-    ctx.shadowColor='rgba(255,180,0,0.5)'; ctx.shadowBlur=6;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  /* ② 남은 점들 — 작고 희미한 흰 점 */
-  for(let i=done+1;i<total;i++){
-    const d=dots[i];
-    const fade=0.18+0.12*(i%3===0?1:0); // 3개마다 살짝 밝게
-    ctx.beginPath(); ctx.arc(d.x,d.y,2.8,0,Math.PI*2);
-    ctx.fillStyle=`rgba(255,255,255,${fade})`; ctx.fill();
-  }
-
-  /* ③ 완료된 점들 — 작은 금색 점 */
-  for(let i=0;i<done;i++){
-    const d=dots[i];
-    ctx.beginPath(); ctx.arc(d.x,d.y,2.2,0,Math.PI*2);
-    ctx.fillStyle='rgba(255,200,0,0.7)'; ctx.fill();
-  }
-
-  /* ④ 현재(다음) 점 — 크고 밝은 맥동 링 */
-  if(done < total){
-    const d=dots[done];
-    const pulse=0.55+0.45*Math.sin(ts*0.006);
-
-    // 외부 글로우 링
-    ctx.save();
-    ctx.beginPath(); ctx.arc(d.x,d.y,11*pulse+4,0,Math.PI*2);
-    ctx.strokeStyle=`rgba(255,220,0,${0.35*pulse})`;
-    ctx.lineWidth=2.5; ctx.stroke(); ctx.restore();
-
-    // 중간 링
-    ctx.save();
-    ctx.beginPath(); ctx.arc(d.x,d.y,8,0,Math.PI*2);
-    ctx.strokeStyle=`rgba(255,240,80,${0.7+0.3*pulse})`;
-    ctx.lineWidth=1.8; ctx.stroke(); ctx.restore();
-
-    // 중심 점
-    ctx.beginPath(); ctx.arc(d.x,d.y,4,0,Math.PI*2);
-    ctx.fillStyle='#fff';
-    ctx.shadowColor='rgba(255,220,0,0.9)'; ctx.shadowBlur=8;
-    ctx.fill(); ctx.shadowBlur=0;
-
-    // 다음 점 방향 힌트 화살표 (3칸 앞)
-    if(done+3 < total){
-      const nd=dots[done+3];
-      const ax=nd.x-d.x, ay=nd.y-d.y;
-      const len=Math.hypot(ax,ay);
-      if(len>0){
-        const ux=ax/len, uy=ay/len;
-        const arrowBase=14, arrowHead=7;
-        const sx=d.x+ux*arrowBase, sy=d.y+uy*arrowBase;
-        const ex=d.x+ux*(arrowBase+arrowHead), ey=d.y+uy*(arrowBase+arrowHead);
-        ctx.save();
-        ctx.globalAlpha=0.35*pulse;
-        ctx.beginPath();
-        ctx.moveTo(sx,sy);
-        ctx.lineTo(ex,ey);
-        // 화살촉
-        const perpX=-uy*3, perpY=ux*3;
-        ctx.moveTo(ex,ey);
-        ctx.lineTo(ex-ux*5+perpX, ey-uy*5+perpY);
-        ctx.moveTo(ex,ey);
-        ctx.lineTo(ex-ux*5-perpX, ey-uy*5-perpY);
-        ctx.strokeStyle='#ffcc00'; ctx.lineWidth=1.5; ctx.lineCap='round';
-        ctx.stroke(); ctx.restore();
+    ctx.shadowColor='rgba(255,180,0,0.45)'; ctx.shadowBlur=6;
+    ctx.beginPath();
+    let segStart = true;
+    for(let k=0;k<sorted.length;k++){
+      const i=sorted[k];
+      const d=dots[i];
+      if(segStart){ ctx.moveTo(d.x,d.y); segStart=false; }
+      else {
+        // 이전 인덱스와 인접하면 이어 그리기, 아니면 새 세그먼트
+        const prev=sorted[k-1];
+        const gap=Math.min(Math.abs(i-prev), total-Math.abs(i-prev));
+        if(gap<=1) ctx.lineTo(d.x,d.y);
+        else { ctx.moveTo(d.x,d.y); }
       }
     }
+    ctx.stroke(); ctx.restore();
+  }
+
+  /* ② 전체 점 그리기 */
+  for(let i=0;i<total;i++){
+    const d=dots[i];
+    const hit  = hitSet.has(i);
+    const avail= !hit && isAvailable(i);
+
+    if(hit){
+      /* 찍힌 점 — 작은 금색 */
+      ctx.beginPath(); ctx.arc(d.x,d.y,2.4,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,200,0,0.8)'; ctx.fill();
+    } else if(avail){
+      /* 찍을 수 있는 점 — 밝은 흰 점 + 맥동 */
+      ctx.beginPath(); ctx.arc(d.x,d.y,3.2*pulse,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fill();
+      ctx.strokeStyle='rgba(255,220,80,0.5)'; ctx.lineWidth=1; ctx.stroke();
+    } else {
+      /* 아직 못 찍는 점 — 매우 희미 */
+      ctx.beginPath(); ctx.arc(d.x,d.y,2,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,0.14)'; ctx.fill();
+    }
+  }
+
+  /* ③ 찍을 수 있는 양쪽 끝 점에 맥동 링 (가이드) */
+  if(hitSet.size > 0 && hitSet.size < total){
+    const sorted=[...hitSet].sort((a,b)=>a-b);
+    const candidates=[];
+    // 체인의 양 끝 인덱스 찾기
+    for(const i of [sorted[0]-1, sorted[sorted.length-1]+1]){
+      const wrapped = ((i % total) + total) % total;
+      if(!hitSet.has(wrapped) && isAvailable(wrapped)) candidates.push(wrapped);
+    }
+    candidates.forEach(i=>{
+      const d=dots[i];
+      ctx.save();
+      ctx.beginPath(); ctx.arc(d.x,d.y,9*pulse+2,0,Math.PI*2);
+      ctx.strokeStyle=`rgba(255,220,0,${0.3*pulse})`;
+      ctx.lineWidth=2; ctx.stroke();
+      ctx.restore();
+    });
   }
 
   /* ⑤ 바늘 커서 — 마지막 탭 위치 */
@@ -430,7 +463,7 @@ function drawDotsAndTrail(ts) {
 // ── HUD ────────────────────────────────────────────────────
 function drawHUD(){
   const bx=55, by=16, bw=BASE_W-110, bh=12;
-  const prog=dots.length>0 ? currentDotIdx/dots.length : 0;
+  const prog=dots.length>0 ? hitSet.size/dots.length : 0;
 
   // 진행바 배경
   ctx.fillStyle='rgba(0,0,0,0.38)'; rRect(bx,by,bw,bh,6); ctx.fill();
@@ -461,7 +494,7 @@ function drawHUD(){
   // 카운트 / 전체
   ctx.font='bold 13px Arial'; ctx.fillStyle='rgba(255,255,255,0.55)';
   ctx.textAlign='center';
-  ctx.fillText(`${currentDotIdx} / ${dots.length}`,BASE_W/2,by-9);
+  ctx.fillText(`${hitSet.size} / ${dots.length}`,BASE_W/2,by-9);
 
   // 모양 이름
   ctx.font='13px Arial'; ctx.fillStyle='rgba(255,200,100,0.6)';
@@ -534,7 +567,7 @@ function addCrack(tx,ty){
 // ── 게임 진행 ───────────────────────────────────────────────
 function startGame(){
   dots=makePoints(currentShape);
-  currentDotIdx=0;
+  hitSet=new Set();
   lives=MAX_LIVES; timeLeft=GAME_SEC; finalScore=0;
   cracks=[]; particles=[]; shakeT=0;
   needleX=-999; needleY=-999; needleAlpha=0;
@@ -552,8 +585,8 @@ function startGame(){
 function endGame(success){
   if(timerID){clearInterval(timerID);timerID=null;}
   if(success){
-    const acc=currentDotIdx/dots.length;
-    finalScore=Math.round(currentDotIdx*15+timeLeft*10+acc*250);
+    const acc=hitSet.size/dots.length;
+    finalScore=Math.round(hitSet.size*15+timeLeft*10+acc*250);
     spawnCelebration();
     state='success';
   } else { state='failed'; }
@@ -571,25 +604,37 @@ function handleTap(tx,ty){
   }
 }
 
-/* 핵심 메카닉: 순차 찍기 */
+/* 핵심 메카닉: 자유 시작 + 인접 확장 찍기
+   - 첫 탭은 아무 점이나 OK
+   - 이후엔 이미 찍은 점의 ±1 인덱스 옆 점만 인식
+   - 캔디 안을 잘못 찍으면 균열 */
 function gameTap(tx,ty){
-  // 바늘 위치 업데이트
   needleX=tx; needleY=ty; needleAlpha=1.0;
 
-  const total=dots.length;
-  if(currentDotIdx>=total) return;
-
-  const next=dots[currentDotIdx];
-  const distToNext=Math.hypot(next.x-tx,next.y-ty);
   const hitR=HIT_R_BASE[currentShape];
+  let hitAny=false;
 
-  if(distToNext<=hitR){
-    /* ✅ 성공: 현재 점 찍기 */
-    spawnHit(next.x,next.y);
-    currentDotIdx++;
-    if(currentDotIdx>=total) setTimeout(()=>endGame(true),280);
-  } else {
-    /* 캔디 안을 찍었는데 너무 멀리 → 균열 */
+  // 탭 위치에서 가장 가까운 미찍 점 찾기
+  let nearestIdx=-1, nearestDist=Infinity;
+  dots.forEach((d,i)=>{
+    if(hitSet.has(i)) return;
+    const dist=Math.hypot(d.x-tx,d.y-ty);
+    if(dist<nearestDist){ nearestDist=dist; nearestIdx=i; }
+  });
+
+  if(nearestIdx>=0 && nearestDist<=hitR){
+    if(isAvailable(nearestIdx)){
+      /* ✅ 인접 점 찍기 성공 */
+      hitSet.add(nearestIdx);
+      spawnHit(dots[nearestIdx].x,dots[nearestIdx].y);
+      hitAny=true;
+      if(hitSet.size>=dots.length) setTimeout(()=>endGame(true),280);
+    }
+    // 인접하지 않은 점은 무반응 (균열 없음)
+  }
+
+  if(!hitAny){
+    /* 점 근처가 아닌 캔디 내부를 찍음 → 균열 */
     const fromCenter=Math.hypot(tx-CANDY_CX,ty-CANDY_CY);
     if(fromCenter<CANDY_R-6){
       addCrack(tx,ty);
@@ -785,7 +830,7 @@ function drawSuccess(){
   ctx.font='bold 28px Arial'; ctx.fillStyle=C.gold;
   ctx.fillText(`${finalScore}점`,BASE_W/2,BASE_H*0.675);
   ctx.font='14px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
-  ctx.fillText(`남은 시간 ${Math.ceil(timeLeft)}초  ·  ${dots.length}개 완성`,BASE_W/2,BASE_H*0.73);
+  ctx.fillText(`남은 시간 ${Math.ceil(timeLeft)}초  ·  ${hitSet.size}개 완성`,BASE_W/2,BASE_H*0.73);
   drawBtn(BASE_W/2,BASE_H*0.86,210,50,'💾 저장 & 랭킹 보기',C.candy,'#fff');
   drawBtn(BASE_W/2,BASE_H*0.93,210,38,'🔄 다시 하기','#3d1a00',C.gold);
   ctx.textAlign='left';
@@ -802,7 +847,7 @@ function drawFailed(){
   ctx.shadowColor=C.red; ctx.shadowBlur=16; ctx.textAlign='center';
   ctx.fillText('💥 실패!',BASE_W/2,BASE_H*0.6); ctx.shadowBlur=0;
   ctx.font='15px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
-  ctx.fillText(`${currentDotIdx} / ${dots.length} 완료`,BASE_W/2,BASE_H*0.675);
+  ctx.fillText(`${hitSet.size} / ${dots.length} 완료`,BASE_W/2,BASE_H*0.675);
   drawBtn(BASE_W/2,BASE_H*0.77,210,50,'🔄 다시 도전!',C.candy,'#fff');
   drawBtn(BASE_W/2,BASE_H*0.86,210,42,'모양 바꾸기','#3d1a00',C.gold);
   drawBtn(BASE_W/2,BASE_H*0.94,210,36,'메인 메뉴','#1a0800','rgba(255,200,100,0.5)');
