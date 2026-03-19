@@ -368,10 +368,73 @@ function drawShapeGuide(shape){
   ctx.stroke(); ctx.setLineDash([]); ctx.restore();
 }
 
-// ── 인접 제한 없음 ─────────────────────────────────────────
-/* 실제 달고나 게임과 동일:
-   모양 위의 점은 순서·위치 상관없이 아무 데나 찍어도 OK.
-   캔디 몸통(점 근처가 아닌 곳)을 찍었을 때만 균열 발생. */
+// ── 바늘 설정 ───────────────────────────────────────────────
+/* 손가락이 화면을 가려도 바늘 끝이 어디를 찌르는지 보이도록
+   실제 터치 위치보다 위쪽에 바늘 끝을 배치한다.
+   hit detection도 손가락 위치가 아닌 바늘 끝 위치 기준.       */
+const NEEDLE_LEN   = 62;                    // 가상단위 — 손잡이→끝 거리
+const NEEDLE_ANGLE = 13 * Math.PI / 180;    // 기울기 13도 (자연스러운 쥠 각도)
+
+/* 손가락(터치) 좌표 → 바늘 끝 좌표 변환 */
+function needleTip(fx, fy) {
+  return {
+    x: fx - NEEDLE_LEN * Math.sin(NEEDLE_ANGLE),
+    y: fy - NEEDLE_LEN * Math.cos(NEEDLE_ANGLE),
+  };
+}
+
+/* 바늘 그래픽 렌더링 */
+function drawNeedle() {
+  if(needleAlpha <= 0.01) return;
+  const tip = needleTip(needleX, needleY);
+
+  ctx.save();
+  ctx.globalAlpha = Math.min(needleAlpha, 1);
+
+  /* 바늘 몸통 — 손잡이(갈색)→끝(은백색) 그라디언트 */
+  const grad = ctx.createLinearGradient(needleX, needleY, tip.x, tip.y);
+  grad.addColorStop(0,   'rgba(140, 80, 30, 0.95)');   // 손잡이
+  grad.addColorStop(0.35,'rgba(200,200,200, 0.97)');   // 몸통
+  grad.addColorStop(1,   'rgba(255,255,255, 1.0)');    // 끝
+  ctx.beginPath();
+  ctx.moveTo(needleX, needleY);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  /* 손잡이 끝 — 작은 원형 그립 */
+  ctx.beginPath();
+  ctx.arc(needleX, needleY, 5, 0, Math.PI * 2);
+  const gGrip = ctx.createRadialGradient(needleX-1,needleY-1,0, needleX,needleY,5);
+  gGrip.addColorStop(0, '#d4945a');
+  gGrip.addColorStop(1, '#7a4010');
+  ctx.fillStyle = gGrip;
+  ctx.fill();
+
+  /* 바늘 끝 — 빛나는 포인트 (여기가 실제 찌르는 곳!) */
+  ctx.shadowColor = 'rgba(255,220,80,0.9)';
+  ctx.shadowBlur  = 10;
+  ctx.beginPath();
+  ctx.arc(tip.x, tip.y, 2.8, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  /* 끝 위치 십자 가이드 (아주 살짝) */
+  ctx.globalAlpha = needleAlpha * 0.4;
+  ctx.strokeStyle = 'rgba(255,230,100,0.9)';
+  ctx.lineWidth = 1;
+  const cs = 4;
+  ctx.beginPath();
+  ctx.moveTo(tip.x-cs, tip.y); ctx.lineTo(tip.x+cs, tip.y);
+  ctx.moveTo(tip.x, tip.y-cs); ctx.lineTo(tip.x, tip.y+cs);
+  ctx.stroke();
+
+  ctx.restore();
+  needleAlpha *= 0.92;   // 손 뗀 후 서서히 사라짐
+}
 
 // ── 핵심 시각화: 점·궤적·바늘 ─────────────────────────────
 function drawDotsAndTrail(ts) {
@@ -415,22 +478,8 @@ function drawDotsAndTrail(ts) {
     }
   }
 
-  /* ⑤ 바늘 커서 — 마지막 탭 위치 */
-  if(needleAlpha > 0.01){
-    ctx.save(); ctx.globalAlpha=needleAlpha;
-    // 바늘 십자
-    ctx.strokeStyle='rgba(255,255,255,0.9)'; ctx.lineWidth=1.2;
-    const ns=5;
-    ctx.beginPath();
-    ctx.moveTo(needleX-ns,needleY); ctx.lineTo(needleX+ns,needleY);
-    ctx.moveTo(needleX,needleY-ns); ctx.lineTo(needleX,needleY+ns);
-    ctx.stroke();
-    // 원
-    ctx.beginPath(); ctx.arc(needleX,needleY,3,0,Math.PI*2);
-    ctx.strokeStyle='rgba(255,220,80,0.9)'; ctx.lineWidth=1; ctx.stroke();
-    ctx.restore();
-    needleAlpha *= 0.88;
-  }
+  /* ⑤ 바늘 그래픽 — 손가락 위치에서 위쪽으로 뻗은 실제 바늘 */
+  drawNeedle();
 }
 
 // ── HUD ────────────────────────────────────────────────────
@@ -582,29 +631,32 @@ function handleTap(tx,ty){
    💥 점 근처가 아닌 캔디 몸통 — 찍으면 균열 발생
    → "정확히 선 위를 찍어야 한다"는 긴장감이 핵심 */
 function gameTap(tx,ty){
+  /* 손가락 위치 저장 → 바늘 그래픽용 */
   needleX=tx; needleY=ty; needleAlpha=1.0;
 
+  /* 실제 hit detection은 바늘 끝 위치 기준 */
+  const tip = needleTip(tx, ty);
   const hitR = HIT_R_BASE[currentShape];
 
-  // 가장 가까운 미찍 점 찾기
+  // 바늘 끝에서 가장 가까운 미찍 점 찾기
   let nearestIdx=-1, nearestDist=Infinity;
   dots.forEach((d,i)=>{
     if(hitSet.has(i)) return;
-    const dist=Math.hypot(d.x-tx,d.y-ty);
+    const dist=Math.hypot(d.x-tip.x, d.y-tip.y);
     if(dist<nearestDist){ nearestDist=dist; nearestIdx=i; }
   });
 
   if(nearestIdx>=0 && nearestDist<=hitR){
-    /* ✅ 점 위 정확히 찍음 — 순서 무관하게 성공 */
+    /* ✅ 바늘 끝이 점 위에 정확히 위치 — 성공 */
     hitSet.add(nearestIdx);
     spawnHit(dots[nearestIdx].x, dots[nearestIdx].y);
     if(hitSet.size>=dots.length) setTimeout(()=>endGame(true),280);
   } else {
-    /* 점 근처가 아닌 캔디 안쪽 → 균열 */
-    const fromCenter=Math.hypot(tx-CANDY_CX,ty-CANDY_CY);
+    /* 바늘 끝이 캔디 안쪽이지만 점을 빗나감 → 균열 */
+    const fromCenter=Math.hypot(tip.x-CANDY_CX, tip.y-CANDY_CY);
     if(fromCenter<CANDY_R-6){
-      addCrack(tx,ty);
-      spawnCrack(tx,ty);
+      addCrack(tip.x, tip.y);
+      spawnCrack(tip.x, tip.y);
       shakeT=8; wrongFlash=1.0;
       lives--;
       if(lives<=0) setTimeout(()=>endGame(false),480);
@@ -861,8 +913,34 @@ function getXY(e){
   if(e.touches) return {x:(e.touches[0].clientX-r.left)/scale,y:(e.touches[0].clientY-r.top)/scale};
   return {x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale};
 }
-canvas.addEventListener('touchstart',e=>{e.preventDefault();const{x,y}=getXY(e);handleTap(x,y);},{passive:false});
-canvas.addEventListener('mousedown',e=>{const{x,y}=getXY(e);handleTap(x,y);});
+/* 탭/클릭 — 실제 게임 입력 */
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const{x,y}=getXY(e);
+  needleX=x; needleY=y; needleAlpha=1.0;  // 즉시 바늘 표시
+  handleTap(x,y);
+},{passive:false});
+
+canvas.addEventListener('mousedown',e=>{
+  const{x,y}=getXY(e);
+  handleTap(x,y);
+});
+
+/* 이동 — 바늘 위치만 업데이트 (게임 입력 없음) */
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(state==='playing'){
+    const{x,y}=getXY(e);
+    needleX=x; needleY=y; needleAlpha=1.0;
+  }
+},{passive:false});
+
+canvas.addEventListener('mousemove',e=>{
+  if(state==='playing'){
+    const{x,y}=getXY(e);
+    needleX=x; needleY=y; needleAlpha=1.0;
+  }
+});
 
 // ── 메인 루프 ───────────────────────────────────────────────
 function loop(ts){
