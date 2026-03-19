@@ -81,6 +81,9 @@ function resizeCanvas() {
   const W = window.innerWidth;
   const H = window.innerHeight;
 
+  /* guard: W 또는 H가 0이거나 비정상이면 스킵 (scale=0 → Infinity 전파 방지) */
+  if (!W || !H || !isFinite(W) || !isFinite(H)) return;
+
   if (H >= W * 1.1) {
     /* ── 세로 모드 (모바일·타블렛 세로) ──────────────────────
        너비를 꽉 채우고, 가상 높이는 실제 화면 비율에 맞춤.
@@ -178,19 +181,32 @@ let needleX = -999, needleY = -999, needleAlpha = 0; // 바늘 커서
 let wrongFlash   = 0;   // 잘못 찍었을 때 빨간 플래시
 let pendingSaveScore = 0;
 let pendingSaveShape = '';
+let pendingSaveTime  = 0;   // 완성까지 걸린 시간 (초)
 let timerID = null;
 
 // ── 로컬 랭킹 ───────────────────────────────────────────────
+/* 저장 구조: { name, shape, score, time, date }
+   score : 높을수록 좋음   (내림차순)
+   time  : 낮을수록 좋음   (오름차순, 완성까지 걸린 초) */
 function getLB() {
-  try { return JSON.parse(localStorage.getItem('dalgona_lb2') || '[]'); }
+  try { return JSON.parse(localStorage.getItem('dalgona_lb3') || '[]'); }
   catch { return []; }
 }
-function saveLB(name, shape, score) {
+function saveLB(name, shape, score, time) {
   const lb = getLB();
-  lb.push({ name, shape, score, date: new Date().toLocaleDateString('ko-KR') });
-  lb.sort((a,b) => b.score - a.score);
-  lb.splice(10);
-  localStorage.setItem('dalgona_lb2', JSON.stringify(lb));
+  lb.push({ name, shape, score, time, date: new Date().toLocaleDateString('ko-KR') });
+  lb.splice(50);  // 최대 50개 보관 (두 카테고리 모두 top5 확보)
+  localStorage.setItem('dalgona_lb3', JSON.stringify(lb));
+}
+/* 점수 TOP 5 */
+function getScoreTop5() {
+  return [...getLB()].sort((a,b) => b.score - a.score).slice(0, 5);
+}
+/* 속도 TOP 5 (완성 기록만, time이 있는 항목) */
+function getSpeedTop5() {
+  return getLB().filter(e => e.time != null)
+                .sort((a,b) => a.time - b.time)
+                .slice(0, 5);
 }
 
 // ── 모양 점 생성기 ──────────────────────────────────────────
@@ -289,6 +305,8 @@ function rRect(x,y,w,h,r){
 }
 
 function drawBtn(cx,cy,w,h,label,bg,fg,alpha=1){
+  /* guard: 좌표가 비정상이면 그리기 스킵 (BASE_H=Infinity 등 방지) */
+  if(!isFinite(cx) || !isFinite(cy) || !isFinite(w) || !isFinite(h)) return;
   ctx.save(); ctx.globalAlpha=alpha;
   const x=cx-w/2, y=cy-h/2;
   ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=8; ctx.shadowOffsetY=3;
@@ -386,6 +404,8 @@ function needleTip(fx, fy) {
 /* 바늘 그래픽 렌더링 */
 function drawNeedle() {
   if(needleAlpha <= 0.01) return;
+  /* guard: needleX/Y가 Infinity/NaN이면 createLinearGradient 에러 방지 */
+  if(!isFinite(needleX) || !isFinite(needleY)) return;
   const tip = needleTip(needleX, needleY);
 
   ctx.save();
@@ -609,6 +629,8 @@ function endGame(success){
   if(success){
     const acc=hitSet.size/dots.length;
     finalScore=Math.round(hitSet.size*15+timeLeft*10+acc*250);
+    // 완성까지 걸린 시간 (소수점 1자리, ex: 23.4초)
+    pendingSaveTime = Math.round((GAME_SEC - timeLeft) * 10) / 10;
     spawnCelebration();
     state='success';
   } else { state='failed'; }
@@ -680,7 +702,9 @@ function selectTap(tx,ty){
 }
 function successTap(tx,ty){
   if(inBtn(tx,ty,BASE_W/2,BASE_H*0.86,210,50)){
-    pendingSaveScore=finalScore; pendingSaveShape=currentShape; showNameOverlay();
+    pendingSaveScore=finalScore; pendingSaveShape=currentShape;
+    // pendingSaveTime은 endGame(true)에서 이미 기록됨
+    showNameOverlay();
   }
   if(inBtn(tx,ty,BASE_W/2,BASE_H*0.93,210,38)) startGame();
 }
@@ -701,7 +725,7 @@ function hideNameOverlay(){ overlay.classList.remove('active'); }
 
 document.getElementById('saveName').addEventListener('click',()=>{
   const name=(nameInput.value.trim()||'익명').slice(0,8);
-  saveLB(name,pendingSaveShape,pendingSaveScore);
+  saveLB(name, pendingSaveShape, pendingSaveScore, pendingSaveTime);
   hideNameOverlay(); state='leaderboard';
 });
 document.getElementById('skipSave').addEventListener('click',()=>{ hideNameOverlay(); state='leaderboard'; });
@@ -873,45 +897,94 @@ function drawFailed(){
 }
 
 // ── 스크린: 랭킹 보드 ───────────────────────────────────────
+/* 점수 TOP5 + 속도 TOP5 두 섹션 표시 */
 function drawLeaderboard(){
   ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-  ctx.font='bold 26px Arial'; ctx.fillStyle=C.gold;
-  ctx.fillText('🏆 랭킹 보드',BASE_W/2,54);
-  const lb=getLB();
-  if(lb.length===0){
-    ctx.font='16px Arial'; ctx.fillStyle='rgba(255,255,255,0.32)';
-    ctx.fillText('아직 기록이 없어요',BASE_W/2,BASE_H/2-10);
-    ctx.fillText('게임을 플레이해보세요!',BASE_W/2,BASE_H/2+22);
-  } else {
-    lb.forEach((e,i)=>{
-      const rowY=84+i*54;
-      ctx.fillStyle=i<3?'rgba(200,130,10,0.16)':'rgba(255,255,255,0.04)';
-      rRect(18,rowY,BASE_W-36,46,8); ctx.fill();
-      const medal=['🥇','🥈','🥉'][i]||`${i+1}.`;
-      ctx.font=i<3?'bold 20px Arial':'16px Arial'; ctx.textAlign='left';
-      ctx.fillStyle='#fff'; ctx.textBaseline='middle';
-      ctx.fillText(medal,30,rowY+23);
-      ctx.font=i<3?'bold 14px Arial':'13px Arial';
-      ctx.fillStyle=i<3?C.gold:'rgba(255,255,255,0.8)';
-      ctx.fillText(e.name,70,rowY+15);
-      ctx.font='11px Arial'; ctx.fillStyle='rgba(255,200,100,0.5)';
-      ctx.fillText(`${SHAPE_ICO[e.shape]||''} ${SHAPE_KO[e.shape]||''}  ·  ${e.date}`,70,rowY+34);
+
+  // 타이틀
+  ctx.font='bold 24px Arial'; ctx.fillStyle=C.gold;
+  ctx.shadowColor=C.candy; ctx.shadowBlur=14;
+  ctx.fillText('🏆 랭킹 보드',BASE_W/2,46);
+  ctx.shadowBlur=0;
+
+  const scoreTop = getScoreTop5();
+  const speedTop = getSpeedTop5();
+  const ROW_H    = 44;
+
+  // 두 섹션을 그리는 공통 함수
+  function drawSection(title, entries, startY, valueFn, valueSuffix){
+    // 섹션 헤더 배경
+    ctx.fillStyle='rgba(200,130,10,0.18)';
+    rRect(14, startY-22, BASE_W-28, 28, 6); ctx.fill();
+    ctx.font='bold 14px Arial'; ctx.fillStyle=C.gold;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(title, BASE_W/2, startY-8);
+
+    if(entries.length===0){
+      ctx.font='13px Arial'; ctx.fillStyle='rgba(255,255,255,0.3)';
+      ctx.fillText('아직 기록 없음', BASE_W/2, startY+ROW_H);
+      return;
+    }
+
+    entries.forEach((e,i)=>{
+      const ry = startY + i * ROW_H + 6;
+      const top3 = i < 3;
+
+      // 행 배경
+      ctx.fillStyle = top3 ? 'rgba(200,130,10,0.14)' : 'rgba(255,255,255,0.03)';
+      rRect(14, ry, BASE_W-28, ROW_H-4, 7); ctx.fill();
+
+      // 메달 / 순위
+      const medal = ['🥇','🥈','🥉'][i] || `${i+1}`;
+      ctx.font = top3 ? 'bold 18px Arial' : '14px Arial';
+      ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillStyle='#fff';
+      ctx.fillText(medal, 24, ry+(ROW_H-4)/2);
+
+      // 닉네임
+      ctx.font = top3 ? 'bold 14px Arial' : '13px Arial';
+      ctx.fillStyle = top3 ? C.gold : 'rgba(255,255,255,0.85)';
+      ctx.fillText(e.name, 62, ry+12);
+
+      // 모양 + 날짜
+      ctx.font='11px Arial'; ctx.fillStyle='rgba(255,200,100,0.45)';
+      ctx.fillText(`${SHAPE_ICO[e.shape]||''} ${SHAPE_KO[e.shape]||''}  ${e.date}`, 62, ry+28);
+
+      // 값 (점수 or 시간)
       ctx.textAlign='right';
-      ctx.font=i<3?'bold 19px Arial':'15px Arial';
-      ctx.fillStyle=i<3?C.gold:'rgba(255,255,255,0.8)';
-      ctx.fillText(`${e.score}점`,BASE_W-22,rowY+23);
+      ctx.font = top3 ? 'bold 17px Arial' : '14px Arial';
+      ctx.fillStyle = top3 ? C.gold : 'rgba(255,255,255,0.8)';
+      ctx.fillText(`${valueFn(e)}${valueSuffix}`, BASE_W-18, ry+(ROW_H-4)/2);
     });
   }
-  drawBtn(BASE_W/2,BASE_H-48,180,46,'← 메인 메뉴','#3d1a00',C.gold);
+
+  // 섹션 1 — 점수 TOP 5
+  const sec1Y = 80;
+  drawSection('🏅  최고 점수  TOP 5', scoreTop, sec1Y,
+              e => e.score, '점');
+
+  // 섹션 2 — 속도 TOP 5
+  const sec2Y = sec1Y + 26 + 5 * ROW_H + 18;
+  drawSection('⚡  최단 완성  TOP 5', speedTop, sec2Y,
+              e => e.time, '초');
+
+  // 메인 메뉴 버튼
+  const btnY = sec2Y + 26 + 5 * ROW_H + 28;
+  drawBtn(BASE_W/2, btnY, 180, 44, '← 메인 메뉴', '#3d1a00', C.gold);
+
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
 
 // ── 입력 이벤트 ────────────────────────────────────────────
 function getXY(e){
   const r=canvas.getBoundingClientRect();
-  if(e.touches) return {x:(e.touches[0].clientX-r.left)/scale,y:(e.touches[0].clientY-r.top)/scale};
-  return {x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale};
+  let x, y;
+  if(e.touches){ x=(e.touches[0].clientX-r.left)/scale; y=(e.touches[0].clientY-r.top)/scale; }
+  else          { x=(e.clientX-r.left)/scale;            y=(e.clientY-r.top)/scale;            }
+  /* guard: scale=0 등으로 Infinity/NaN이 되면 화면 중앙으로 대체 */
+  if(!isFinite(x)||!isFinite(y)) return {x:BASE_W/2, y:BASE_H/2};
+  return {x, y};
 }
 /* 탭/클릭 — 실제 게임 입력 */
 canvas.addEventListener('touchstart',e=>{
