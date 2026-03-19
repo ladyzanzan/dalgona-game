@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1">
+  <title>달고나 게임 🍬</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0500; }
+    body { display: flex; justify-content: center; align-items: center; touch-action: none; user-select: none; }
+    #gameCanvas { display: block; touch-action: none; cursor: crosshair; }
+
+    #nameOverlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.78); z-index: 10;
+      justify-content: center; align-items: center; flex-direction: column;
+    }
+    #nameOverlay.active { display: flex; }
+    #nameOverlay .box {
+      background: #2a1000; border: 2px solid #c8860a;
+      border-radius: 16px; padding: 32px 28px; text-align: center; width: 300px;
+    }
+    #nameOverlay h2 { color: #ffcc00; font-size: 22px; margin-bottom: 10px; }
+    #nameOverlay p  { color: rgba(255,255,255,0.65); font-size: 13px; margin-bottom: 16px; }
+    #nameInput {
+      width: 100%; padding: 10px 14px; border-radius: 8px;
+      border: 1.5px solid #c8860a; background: #1a0800;
+      color: #fff; font-size: 18px; text-align: center; margin-bottom: 14px; outline: none;
+    }
+    .overlay-btn {
+      width: 100%; padding: 12px; border-radius: 8px; border: none;
+      font-size: 16px; font-weight: bold; cursor: pointer; margin-bottom: 8px;
+    }
+    .overlay-btn.primary   { background: #c8860a; color: #fff; }
+    .overlay-btn.secondary { background: #3d1a00; color: #ffcc00; }
+  </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="nameOverlay">
+  <div class="box">
+    <h2>🏆 점수 저장</h2>
+    <p>랭킹 보드에 남길 닉네임을 입력하세요</p>
+    <input id="nameInput" type="text" maxlength="8" placeholder="닉네임 (최대 8자)">
+    <button class="overlay-btn primary"   id="saveName">💾 저장하기</button>
+    <button class="overlay-btn secondary" id="skipSave">저장 안 함</button>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   달고나 게임 v2 — index.html
+   Purpose : 모바일/PC 브라우저용 달고나 바늘 찍기 게임 (정교한 순차 메카닉)
+   Mechanic:
+     - 모양 윤곽선을 따라 배치된 점들을 순서대로 하나씩 찍기
+     - 현재 찍어야 할 점(next dot)만 인식 — 순서 틀리면 무반응
+     - 현재 점에서 너무 멀리 찍으면 균열 발생
+     - 조금씩 조금씩 떼어내는 정교한 바늘 찍기 감각 구현
+   Features:
+     - 5가지 모양 / 목숨 3개 / 60초 제한
+     - 완료 궤적(금색 선) + 남은 점(흰 점) + 현재 점(맥동 링)
+     - 바늘 커서 (마지막 탭 위치 표시)
+     - 파티클·균열·흔들림 이펙트
+     - 로컬스토리지 랭킹 보드 (상위 10명)
+   Tech  : HTML5 Canvas 단일 파일, 외부 의존성 없음
+   ============================================================ */
+
+// ── 캔버스 ──────────────────────────────────────────────────
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+
+const BASE_W = 400, BASE_H = 700;
+let scale = 1;
+
+function resizeCanvas() {
+  scale = Math.min(window.innerWidth / BASE_W, window.innerHeight / BASE_H);
+  canvas.width  = Math.floor(BASE_W * scale);
+  canvas.height = Math.floor(BASE_H * scale);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ── 팔레트 ──────────────────────────────────────────────────
+const C = {
+  bg:         '#0d0500',
+  candy:      '#c8860a',
+  candyL:     '#e8a020',
+  candyD:     '#7a4c04',
+  candyHL:    '#f5c842',
+  gold:       '#ffcc00',
+  red:        '#ff4444',
+  green:      '#44ff88',
+  white:      'rgba(255,255,255,0.92)',
+};
+
+// ── 모양 설정 ───────────────────────────────────────────────
+const SHAPES    = ['circle','triangle','star','heart','umbrella'];
+const SHAPE_KO  = { circle:'원', triangle:'삼각형', star:'별', heart:'하트', umbrella:'우산' };
+const SHAPE_ICO = { circle:'⭕', triangle:'▲', star:'⭐', heart:'❤️', umbrella:'☂️' };
+const SHAPE_DIF = { circle:1, triangle:2, star:4, heart:3, umbrella:4 };
+
+/* 점 개수 — 많을수록 더 세밀한 찍기 필요 */
+const SHAPE_N   = { circle:60, triangle:54, star:80, heart:70, umbrella:64 };
+
+const CANDY_CX = BASE_W / 2;
+const CANDY_CY = BASE_H * 0.44;
+const CANDY_R  = 128;
+const SHAPE_SZ = 68;
+
+/* 인식 반지름: 현재 점에서 이 거리 안에 찍어야 성공 */
+const HIT_R_BASE = { circle:22, triangle:20, star:16, heart:18, umbrella:18 };
+/* 이 거리보다 멀리 찍으면 균열 */
+const WRONG_R   = 24;
+
+const MAX_LIVES = 3;
+const GAME_SEC  = 75;   // 점수 여유를 위해 75초
+
+// ── 게임 상태 ───────────────────────────────────────────────
+let state        = 'menu';
+let currentShape = 'star';
+let selectedIdx  = 2;
+
+let dots         = [];      // 모양 위의 점 배열 [{x,y}]
+let currentDotIdx = 0;      // 지금 찍어야 할 점 인덱스
+let lives        = MAX_LIVES;
+let timeLeft     = GAME_SEC;
+let finalScore   = 0;
+let cracks       = [];
+let particles    = [];
+let shakeT       = 0;
+let countdownT   = 0;
+let needleX = -999, needleY = -999, needleAlpha = 0; // 바늘 커서
+let wrongFlash   = 0;   // 잘못 찍었을 때 빨간 플래시
+let pendingSaveScore = 0;
+let pendingSaveShape = '';
+let timerID = null;
+
+// ── 로컬 랭킹 ───────────────────────────────────────────────
+function getLB() {
+  try { return JSON.parse(localStorage.getItem('dalgona_lb2') || '[]'); }
+  catch { return []; }
+}
+function saveLB(name, shape, score) {
+  const lb = getLB();
+  lb.push({ name, shape, score, date: new Date().toLocaleDateString('ko-KR') });
+  lb.sort((a,b) => b.score - a.score);
+  lb.splice(10);
+  localStorage.setItem('dalgona_lb2', JSON.stringify(lb));
+}
+
+// ── 모양 점 생성기 ──────────────────────────────────────────
+function circlePoints(cx, cy, r, n) {
+  return Array.from({length:n}, (_,i) => {
+    const a = (i/n)*Math.PI*2 - Math.PI/2;
+    return { x: cx+Math.cos(a)*r, y: cy+Math.sin(a)*r };
+  });
+}
+
+function trianglePoints(cx, cy, sz, n) {
+  const v = [
+    {x:cx,              y:cy-sz},
+    {x:cx+sz*0.866,     y:cy+sz*0.5},
+    {x:cx-sz*0.866,     y:cy+sz*0.5},
+  ];
+  const pts=[], perSide=Math.floor(n/3);
+  for(let s=0;s<3;s++){
+    const a=v[s], b=v[(s+1)%3];
+    for(let i=0;i<perSide;i++){
+      const t=i/perSide;
+      pts.push({x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t});
+    }
+  }
+  return pts;
+}
+
+function starPoints(cx, cy, R, r, n) {
+  const total=10;
+  const verts=Array.from({length:total},(_,i)=>{
+    const a=(i/total)*Math.PI*2-Math.PI/2;
+    const rad=i%2===0?R:r;
+    return {x:cx+Math.cos(a)*rad, y:cy+Math.sin(a)*rad};
+  });
+  const pts=[], perSeg=Math.floor(n/total);
+  for(let s=0;s<total;s++){
+    const a=verts[s], b=verts[(s+1)%total];
+    for(let i=0;i<perSeg;i++){
+      const t=i/perSeg;
+      pts.push({x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t});
+    }
+  }
+  return pts;
+}
+
+function heartPoints(cx, cy, sz, n) {
+  return Array.from({length:n},(_,i)=>{
+    const t=(i/n)*Math.PI*2;
+    const hx=16*Math.pow(Math.sin(t),3);
+    const hy=-(13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t));
+    const s2=sz/17;
+    return {x:cx+hx*s2, y:cy+hy*s2};
+  });
+}
+
+function umbrellaPoints(cx, cy, sz, n) {
+  const pts=[];
+  const topN=Math.floor(n*0.55);
+  const straightN=Math.floor(n*0.25);
+  const hookN=n-topN-straightN;
+  for(let i=0;i<=topN;i++){
+    const a=Math.PI+(i/topN)*Math.PI;
+    pts.push({x:cx+Math.cos(a)*sz, y:cy+Math.sin(a)*sz*0.85});
+  }
+  for(let i=1;i<=straightN;i++){
+    pts.push({x:cx, y:cy+(i/straightN)*sz*0.65});
+  }
+  const hY=cy+sz*0.65;
+  for(let i=0;i<hookN;i++){
+    const a=-Math.PI/2+(i/Math.max(hookN-1,1))*Math.PI;
+    pts.push({x:cx+Math.cos(a)*sz*0.22, y:hY+Math.sin(a)*sz*0.22});
+  }
+  return pts;
+}
+
+function makePoints(shape) {
+  const n=SHAPE_N[shape];
+  switch(shape){
+    case 'circle':   return circlePoints(CANDY_CX,CANDY_CY,SHAPE_SZ,n);
+    case 'triangle': return trianglePoints(CANDY_CX,CANDY_CY,SHAPE_SZ,n);
+    case 'star':     return starPoints(CANDY_CX,CANDY_CY,SHAPE_SZ,SHAPE_SZ*0.42,n);
+    case 'heart':    return heartPoints(CANDY_CX,CANDY_CY,SHAPE_SZ,n);
+    case 'umbrella': return umbrellaPoints(CANDY_CX,CANDY_CY,SHAPE_SZ,n);
+  }
+}
+
+// ── UI 헬퍼 ────────────────────────────────────────────────
+function rRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+function drawBtn(cx,cy,w,h,label,bg,fg,alpha=1){
+  ctx.save(); ctx.globalAlpha=alpha;
+  const x=cx-w/2, y=cy-h/2;
+  ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=8; ctx.shadowOffsetY=3;
+  const g=ctx.createLinearGradient(x,y,x,y+h);
+  g.addColorStop(0,lighten(bg,28)); g.addColorStop(1,bg);
+  ctx.fillStyle=g; rRect(x,y,w,h,h/2); ctx.fill();
+  ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+  ctx.strokeStyle='rgba(255,200,80,0.3)'; ctx.lineWidth=1.2;
+  rRect(x,y,w,h,h/2); ctx.stroke();
+  ctx.font=`bold ${Math.min(h*0.42,18)}px Arial`;
+  ctx.fillStyle=fg; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label,cx,cy+1);
+  ctx.restore();
+}
+
+function lighten(hex,amt){
+  if(!hex.startsWith('#')) return hex;
+  const n=parseInt(hex.slice(1),16);
+  return `rgb(${Math.min(255,(n>>16)+amt)},${Math.min(255,((n>>8)&0xff)+amt)},${Math.min(255,(n&0xff)+amt)})`;
+}
+
+function inBtn(tx,ty,cx,cy,w,h){
+  return Math.abs(tx-cx)<w/2 && Math.abs(ty-cy)<h/2;
+}
+
+// ── 달고나 드로잉 ───────────────────────────────────────────
+function drawCandy(cx, cy, r) {
+  const g=ctx.createRadialGradient(cx-r*0.28,cy-r*0.28,r*0.05,cx,cy,r);
+  g.addColorStop(0,C.candyHL); g.addColorStop(0.3,C.candyL);
+  g.addColorStop(0.75,C.candy); g.addColorStop(1,C.candyD);
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.fillStyle=g; ctx.fill();
+  ctx.save(); ctx.globalAlpha=0.36; ctx.fillStyle='#fff';
+  ctx.beginPath();
+  ctx.ellipse(cx-r*0.27,cy-r*0.33,r*0.13,r*0.07,-Math.PI/4.5,0,Math.PI*2);
+  ctx.fill(); ctx.restore();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle=C.candyD; ctx.lineWidth=2.5; ctx.stroke();
+}
+
+function drawCracks(){
+  cracks.forEach(c=>{
+    ctx.save(); ctx.beginPath();
+    ctx.moveTo(c.x1,c.y1);
+    c.segs.forEach(s=>ctx.lineTo(s.x,s.y));
+    ctx.strokeStyle=`rgba(55,18,0,${c.op})`;
+    ctx.lineWidth=c.w; ctx.lineCap='round'; ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// ── 모양 가이드선 (희미한 점선) ─────────────────────────────
+function drawShapeGuide(shape){
+  ctx.save(); ctx.globalAlpha=0.25; ctx.setLineDash([3,5]);
+  ctx.strokeStyle='#3d1a00'; ctx.lineWidth=1.8;
+  ctx.beginPath();
+  switch(shape){
+    case 'circle': ctx.arc(CANDY_CX,CANDY_CY,SHAPE_SZ,0,Math.PI*2); break;
+    case 'triangle':{
+      const v=[{x:CANDY_CX,y:CANDY_CY-SHAPE_SZ},{x:CANDY_CX+SHAPE_SZ*0.866,y:CANDY_CY+SHAPE_SZ*0.5},{x:CANDY_CX-SHAPE_SZ*0.866,y:CANDY_CY+SHAPE_SZ*0.5}];
+      ctx.moveTo(v[0].x,v[0].y); v.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath(); break;
+    }
+    case 'star':{
+      const total=10,R=SHAPE_SZ,r=SHAPE_SZ*0.42;
+      for(let i=0;i<total;i++){const a=(i/total)*Math.PI*2-Math.PI/2,rad=i%2===0?R:r,x=CANDY_CX+Math.cos(a)*rad,y=CANDY_CY+Math.sin(a)*rad;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+      ctx.closePath(); break;
+    }
+    case 'heart':{
+      const pts=heartPoints(CANDY_CX,CANDY_CY,SHAPE_SZ,60);
+      ctx.moveTo(pts[0].x,pts[0].y); pts.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath(); break;
+    }
+    case 'umbrella':{
+      const pts=umbrellaPoints(CANDY_CX,CANDY_CY,SHAPE_SZ,50);
+      ctx.moveTo(pts[0].x,pts[0].y); pts.forEach(p=>ctx.lineTo(p.x,p.y)); break;
+    }
+  }
+  ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+}
+
+// ── 핵심 시각화: 점·궤적·바늘 ─────────────────────────────
+function drawDotsAndTrail(ts) {
+  const done = currentDotIdx;   // 0 ~ done-1 이 완료됨
+  const total = dots.length;
+
+  /* ① 완료된 궤적 — 황금색 선 */
+  if(done > 1){
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(dots[0].x, dots[0].y);
+    for(let i=1;i<done;i++) ctx.lineTo(dots[i].x, dots[i].y);
+    ctx.strokeStyle='rgba(255,200,0,0.85)';
+    ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.shadowColor='rgba(255,180,0,0.5)'; ctx.shadowBlur=6;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* ② 남은 점들 — 작고 희미한 흰 점 */
+  for(let i=done+1;i<total;i++){
+    const d=dots[i];
+    const fade=0.18+0.12*(i%3===0?1:0); // 3개마다 살짝 밝게
+    ctx.beginPath(); ctx.arc(d.x,d.y,2.8,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${fade})`; ctx.fill();
+  }
+
+  /* ③ 완료된 점들 — 작은 금색 점 */
+  for(let i=0;i<done;i++){
+    const d=dots[i];
+    ctx.beginPath(); ctx.arc(d.x,d.y,2.2,0,Math.PI*2);
+    ctx.fillStyle='rgba(255,200,0,0.7)'; ctx.fill();
+  }
+
+  /* ④ 현재(다음) 점 — 크고 밝은 맥동 링 */
+  if(done < total){
+    const d=dots[done];
+    const pulse=0.55+0.45*Math.sin(ts*0.006);
+
+    // 외부 글로우 링
+    ctx.save();
+    ctx.beginPath(); ctx.arc(d.x,d.y,11*pulse+4,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(255,220,0,${0.35*pulse})`;
+    ctx.lineWidth=2.5; ctx.stroke(); ctx.restore();
+
+    // 중간 링
+    ctx.save();
+    ctx.beginPath(); ctx.arc(d.x,d.y,8,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(255,240,80,${0.7+0.3*pulse})`;
+    ctx.lineWidth=1.8; ctx.stroke(); ctx.restore();
+
+    // 중심 점
+    ctx.beginPath(); ctx.arc(d.x,d.y,4,0,Math.PI*2);
+    ctx.fillStyle='#fff';
+    ctx.shadowColor='rgba(255,220,0,0.9)'; ctx.shadowBlur=8;
+    ctx.fill(); ctx.shadowBlur=0;
+
+    // 다음 점 방향 힌트 화살표 (3칸 앞)
+    if(done+3 < total){
+      const nd=dots[done+3];
+      const ax=nd.x-d.x, ay=nd.y-d.y;
+      const len=Math.hypot(ax,ay);
+      if(len>0){
+        const ux=ax/len, uy=ay/len;
+        const arrowBase=14, arrowHead=7;
+        const sx=d.x+ux*arrowBase, sy=d.y+uy*arrowBase;
+        const ex=d.x+ux*(arrowBase+arrowHead), ey=d.y+uy*(arrowBase+arrowHead);
+        ctx.save();
+        ctx.globalAlpha=0.35*pulse;
+        ctx.beginPath();
+        ctx.moveTo(sx,sy);
+        ctx.lineTo(ex,ey);
+        // 화살촉
+        const perpX=-uy*3, perpY=ux*3;
+        ctx.moveTo(ex,ey);
+        ctx.lineTo(ex-ux*5+perpX, ey-uy*5+perpY);
+        ctx.moveTo(ex,ey);
+        ctx.lineTo(ex-ux*5-perpX, ey-uy*5-perpY);
+        ctx.strokeStyle='#ffcc00'; ctx.lineWidth=1.5; ctx.lineCap='round';
+        ctx.stroke(); ctx.restore();
+      }
+    }
+  }
+
+  /* ⑤ 바늘 커서 — 마지막 탭 위치 */
+  if(needleAlpha > 0.01){
+    ctx.save(); ctx.globalAlpha=needleAlpha;
+    // 바늘 십자
+    ctx.strokeStyle='rgba(255,255,255,0.9)'; ctx.lineWidth=1.2;
+    const ns=5;
+    ctx.beginPath();
+    ctx.moveTo(needleX-ns,needleY); ctx.lineTo(needleX+ns,needleY);
+    ctx.moveTo(needleX,needleY-ns); ctx.lineTo(needleX,needleY+ns);
+    ctx.stroke();
+    // 원
+    ctx.beginPath(); ctx.arc(needleX,needleY,3,0,Math.PI*2);
+    ctx.strokeStyle='rgba(255,220,80,0.9)'; ctx.lineWidth=1; ctx.stroke();
+    ctx.restore();
+    needleAlpha *= 0.88;
+  }
+}
+
+// ── HUD ────────────────────────────────────────────────────
+function drawHUD(){
+  const bx=55, by=16, bw=BASE_W-110, bh=12;
+  const prog=dots.length>0 ? currentDotIdx/dots.length : 0;
+
+  // 진행바 배경
+  ctx.fillStyle='rgba(0,0,0,0.38)'; rRect(bx,by,bw,bh,6); ctx.fill();
+  // 채우기
+  if(prog>0){
+    const pg=ctx.createLinearGradient(bx,0,bx+bw,0);
+    pg.addColorStop(0,'#ff8800'); pg.addColorStop(1,'#ffcc00');
+    ctx.fillStyle=pg; rRect(bx,by,bw*prog,bh,6); ctx.fill();
+  }
+  ctx.strokeStyle='rgba(255,200,100,0.3)'; ctx.lineWidth=1;
+  rRect(bx,by,bw,bh,6); ctx.stroke();
+
+  // 목숨
+  ctx.textBaseline='middle';
+  for(let i=0;i<MAX_LIVES;i++){
+    ctx.globalAlpha=i<lives?1:0.18;
+    ctx.font='15px Arial'; ctx.textAlign='left';
+    ctx.fillText('🍬',bx+i*21,by-10);
+  }
+  ctx.globalAlpha=1;
+
+  // 타이머
+  ctx.font='bold 16px Arial';
+  ctx.fillStyle=timeLeft<=10?C.red:C.gold;
+  ctx.textAlign='right';
+  ctx.fillText(`${Math.ceil(timeLeft)}s`,BASE_W-bx+45,by-9);
+
+  // 카운트 / 전체
+  ctx.font='bold 13px Arial'; ctx.fillStyle='rgba(255,255,255,0.55)';
+  ctx.textAlign='center';
+  ctx.fillText(`${currentDotIdx} / ${dots.length}`,BASE_W/2,by-9);
+
+  // 모양 이름
+  ctx.font='13px Arial'; ctx.fillStyle='rgba(255,200,100,0.6)';
+  ctx.textBaseline='bottom';
+  ctx.fillText(`${SHAPE_ICO[currentShape]} ${SHAPE_KO[currentShape]}`,BASE_W/2,BASE_H-8);
+  ctx.textBaseline='alphabetic';
+
+  // 잘못 찍었을 때 빨간 테두리 플래시
+  if(wrongFlash>0){
+    ctx.save();
+    ctx.globalAlpha=wrongFlash*0.55;
+    ctx.strokeStyle=C.red; ctx.lineWidth=10;
+    ctx.strokeRect(0,0,BASE_W,BASE_H);
+    ctx.restore();
+    wrongFlash=Math.max(0,wrongFlash-0.07);
+  }
+}
+
+// ── 파티클 ─────────────────────────────────────────────────
+function spawnHit(x,y){
+  for(let i=0;i<6;i++){
+    const a=Math.random()*Math.PI*2, s=1.2+Math.random()*2.2;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,r:1.8+Math.random()*2,color:'#ffcc00',life:24+Math.random()*14,max:38});
+  }
+}
+function spawnCrack(x,y){
+  for(let i=0;i<10;i++){
+    const a=Math.random()*Math.PI*2, s=2+Math.random()*3;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,r:2+Math.random()*2.5,color:'#7a4000',life:20+Math.random()*16,max:36});
+  }
+}
+function spawnCelebration(){
+  const cols=['#ffcc00','#ff8800','#ff4444','#44ff88','#4488ff','#cc44ff','#fff'];
+  for(let i=0;i<90;i++){
+    const a=Math.random()*Math.PI*2, s=3+Math.random()*6;
+    particles.push({
+      x:CANDY_CX+(Math.random()-0.5)*CANDY_R*1.2,
+      y:CANDY_CY+(Math.random()-0.5)*CANDY_R*0.8,
+      vx:Math.cos(a)*s, vy:Math.sin(a)*s-2.5,
+      r:3+Math.random()*4.5,
+      color:cols[Math.floor(Math.random()*cols.length)],
+      life:60+Math.random()*50, max:110
+    });
+  }
+}
+function updateParticles(){
+  particles=particles.filter(p=>p.life>0);
+  particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.16;p.vx*=0.97;p.vy*=0.97;p.life--;});
+}
+function drawParticles(){
+  particles.forEach(p=>{
+    ctx.save(); ctx.globalAlpha=p.life/p.max;
+    ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+}
+
+// ── 균열 ───────────────────────────────────────────────────
+function addCrack(tx,ty){
+  let cx=tx,cy=ty; const segs=[];
+  for(let i=0;i<4+Math.floor(Math.random()*3);i++){
+    const a=Math.random()*Math.PI*2,len=10+Math.random()*20;
+    cx+=Math.cos(a)*len; cy+=Math.sin(a)*len;
+    segs.push({x:cx,y:cy});
+  }
+  cracks.push({x1:tx,y1:ty,segs,op:0.9,w:1.6+Math.random()*0.8});
+}
+
+// ── 게임 진행 ───────────────────────────────────────────────
+function startGame(){
+  dots=makePoints(currentShape);
+  currentDotIdx=0;
+  lives=MAX_LIVES; timeLeft=GAME_SEC; finalScore=0;
+  cracks=[]; particles=[]; shakeT=0;
+  needleX=-999; needleY=-999; needleAlpha=0;
+  wrongFlash=0;
+
+  if(timerID) clearInterval(timerID);
+  timerID=setInterval(()=>{
+    if(state==='playing'){ timeLeft-=0.1; if(timeLeft<=0){timeLeft=0;endGame(false);} }
+  },100);
+
+  countdownT=performance.now();
+  state='countdown';
+}
+
+function endGame(success){
+  if(timerID){clearInterval(timerID);timerID=null;}
+  if(success){
+    const acc=currentDotIdx/dots.length;
+    finalScore=Math.round(currentDotIdx*15+timeLeft*10+acc*250);
+    spawnCelebration();
+    state='success';
+  } else { state='failed'; }
+}
+
+// ── 탭 처리 ─────────────────────────────────────────────────
+function handleTap(tx,ty){
+  switch(state){
+    case 'menu':        menuTap(tx,ty);    break;
+    case 'select':      selectTap(tx,ty);  break;
+    case 'playing':     gameTap(tx,ty);    break;
+    case 'success':     successTap(tx,ty); break;
+    case 'failed':      failedTap(tx,ty);  break;
+    case 'leaderboard': lbTap(tx,ty);      break;
+  }
+}
+
+/* 핵심 메카닉: 순차 찍기 */
+function gameTap(tx,ty){
+  // 바늘 위치 업데이트
+  needleX=tx; needleY=ty; needleAlpha=1.0;
+
+  const total=dots.length;
+  if(currentDotIdx>=total) return;
+
+  const next=dots[currentDotIdx];
+  const distToNext=Math.hypot(next.x-tx,next.y-ty);
+  const hitR=HIT_R_BASE[currentShape];
+
+  if(distToNext<=hitR){
+    /* ✅ 성공: 현재 점 찍기 */
+    spawnHit(next.x,next.y);
+    currentDotIdx++;
+    if(currentDotIdx>=total) setTimeout(()=>endGame(true),280);
+  } else {
+    /* 캔디 안을 찍었는데 너무 멀리 → 균열 */
+    const fromCenter=Math.hypot(tx-CANDY_CX,ty-CANDY_CY);
+    if(fromCenter<CANDY_R-6){
+      addCrack(tx,ty);
+      spawnCrack(tx,ty);
+      shakeT=8; wrongFlash=1.0;
+      lives--;
+      if(lives<=0) setTimeout(()=>endGame(false),480);
+    }
+  }
+}
+
+function menuTap(tx,ty){
+  if(inBtn(tx,ty,BASE_W/2,520,220,54)){state='select';selectedIdx=SHAPES.indexOf(currentShape);}
+  if(inBtn(tx,ty,BASE_W/2,592,220,44)){state='leaderboard';}
+}
+function selectTap(tx,ty){
+  SHAPES.forEach((_,i)=>{
+    const col=i<4?i%2:0, row=i<4?Math.floor(i/2):2;
+    const cx=i<4?(col===0?BASE_W/2-94:BASE_W/2+94):BASE_W/2;
+    const cy=165+row*140;
+    if(Math.abs(tx-cx)<78&&Math.abs(ty-cy)<58) selectedIdx=i;
+  });
+  if(inBtn(tx,ty,BASE_W/2,BASE_H-68,200,50)){currentShape=SHAPES[selectedIdx];startGame();}
+  if(inBtn(tx,ty,BASE_W/2,BASE_H-18,120,34)) state='menu';
+}
+function successTap(tx,ty){
+  if(inBtn(tx,ty,BASE_W/2,BASE_H*0.86,210,50)){
+    pendingSaveScore=finalScore; pendingSaveShape=currentShape; showNameOverlay();
+  }
+  if(inBtn(tx,ty,BASE_W/2,BASE_H*0.93,210,38)) startGame();
+}
+function failedTap(tx,ty){
+  if(inBtn(tx,ty,BASE_W/2,BASE_H*0.77,210,50)) startGame();
+  if(inBtn(tx,ty,BASE_W/2,BASE_H*0.86,210,42)) state='select';
+  if(inBtn(tx,ty,BASE_W/2,BASE_H*0.94,210,36)) state='menu';
+}
+function lbTap(tx,ty){
+  if(inBtn(tx,ty,BASE_W/2,BASE_H-48,180,46)) state='menu';
+}
+
+// ── 닉네임 오버레이 ─────────────────────────────────────────
+const overlay=document.getElementById('nameOverlay');
+const nameInput=document.getElementById('nameInput');
+function showNameOverlay(){ nameInput.value=''; overlay.classList.add('active'); nameInput.focus(); }
+function hideNameOverlay(){ overlay.classList.remove('active'); }
+
+document.getElementById('saveName').addEventListener('click',()=>{
+  const name=(nameInput.value.trim()||'익명').slice(0,8);
+  saveLB(name,pendingSaveShape,pendingSaveScore);
+  hideNameOverlay(); state='leaderboard';
+});
+document.getElementById('skipSave').addEventListener('click',()=>{ hideNameOverlay(); state='leaderboard'; });
+
+// ── 스크린: 메뉴 ────────────────────────────────────────────
+function drawMenu(ts){
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
+
+  // 배경 장식
+  [[40,100,26],[360,80,18],[30,540,22],[370,480,20],[200,620,28]].forEach(([x,y,r],i)=>{
+    ctx.save(); ctx.globalAlpha=0.06+0.04*Math.sin(ts*0.0007+i);
+    drawCandy(x,y,r); ctx.restore();
+  });
+
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 56px Arial';
+  ctx.shadowColor=C.candy; ctx.shadowBlur=22; ctx.fillStyle=C.gold;
+  ctx.fillText('달고나',BASE_W/2,130+Math.sin(ts*0.0011)*5);
+  ctx.shadowBlur=0;
+
+  ctx.font='19px Arial'; ctx.fillStyle='rgba(255,200,100,0.72)';
+  ctx.fillText('🍬 바늘로 찍기 게임 🍬',BASE_W/2,166);
+
+  // 데모 달고나
+  drawCandy(BASE_W/2,322,108);
+  drawShapeGuideAt(currentShape,BASE_W/2,322,70);
+  ctx.font='46px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(SHAPE_ICO[currentShape],BASE_W/2,322);
+  ctx.textBaseline='alphabetic';
+
+  // 설명 문구
+  ctx.font='13px Arial'; ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.fillText('순서대로 점을 찍어 모양을 완성하세요!',BASE_W/2,440);
+
+  const lb=getLB();
+  if(lb.length>0){
+    ctx.font='14px Arial'; ctx.fillStyle='rgba(255,200,100,0.6)';
+    ctx.fillText(`🏆 최고 기록: ${lb[0].score}점  (${lb[0].name})`,BASE_W/2,464);
+  }
+
+  drawBtn(BASE_W/2,520,220,54,'▶  게임 시작',C.candy,'#fff');
+  drawBtn(BASE_W/2,592,220,44,'🏆  랭킹 보드','#3d1a00',C.gold);
+
+  // 제작자 크레딧
+  ctx.font='12px Arial'; ctx.fillStyle='rgba(255,200,100,0.35)';
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillText('made by ladyzanzan 🍬', BASE_W/2, BASE_H - 14);
+
+  ctx.textAlign='left';
+}
+
+function drawShapeGuideAt(shape,cx,cy,sz){
+  ctx.save(); ctx.globalAlpha=0.3; ctx.setLineDash([3,4]);
+  ctx.strokeStyle='#3d1a00'; ctx.lineWidth=1.5; ctx.beginPath();
+  if(shape==='circle') ctx.arc(cx,cy,sz,0,Math.PI*2);
+  else if(shape==='triangle'){const v=[{x:cx,y:cy-sz},{x:cx+sz*0.866,y:cy+sz*0.5},{x:cx-sz*0.866,y:cy+sz*0.5}];ctx.moveTo(v[0].x,v[0].y);v.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();}
+  else if(shape==='star'){const total=10,R=sz,r=sz*0.42;for(let i=0;i<total;i++){const a=(i/total)*Math.PI*2-Math.PI/2,rad=i%2===0?R:r,x=cx+Math.cos(a)*rad,y=cy+Math.sin(a)*rad;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}ctx.closePath();}
+  else if(shape==='heart'){const pts=heartPoints(cx,cy,sz,50);ctx.moveTo(pts[0].x,pts[0].y);pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();}
+  else if(shape==='umbrella'){const pts=umbrellaPoints(cx,cy,sz,40);ctx.moveTo(pts[0].x,pts[0].y);pts.forEach(p=>ctx.lineTo(p.x,p.y));}
+  ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+}
+
+// ── 스크린: 모양 선택 ───────────────────────────────────────
+function drawSelect(){
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 25px Arial'; ctx.fillStyle=C.gold;
+  ctx.fillText('모양 선택',BASE_W/2,54);
+  ctx.font='13px Arial'; ctx.fillStyle='rgba(255,200,100,0.5)';
+  ctx.fillText('찍고 싶은 달고나 모양을 고르세요',BASE_W/2,78);
+
+  SHAPES.forEach((shape,i)=>{
+    const col=i<4?i%2:0, row=i<4?Math.floor(i/2):2;
+    const cx=i<4?(col===0?BASE_W/2-94:BASE_W/2+94):BASE_W/2;
+    const cy=165+row*140;
+    const sel=i===selectedIdx;
+    ctx.fillStyle=sel?'rgba(200,130,10,0.26)':'rgba(255,255,255,0.04)';
+    ctx.strokeStyle=sel?C.candyL:'rgba(255,200,100,0.18)';
+    ctx.lineWidth=sel?2:1;
+    rRect(cx-78,cy-56,156,116,12); ctx.fill(); ctx.stroke();
+    ctx.font='32px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(SHAPE_ICO[shape],cx,cy-12);
+    ctx.font='bold 14px Arial'; ctx.fillStyle=C.gold; ctx.textBaseline='alphabetic';
+    ctx.fillText(SHAPE_KO[shape],cx,cy+22);
+    ctx.font='11px Arial'; ctx.fillStyle='rgba(255,200,100,0.55)';
+    const diff=SHAPE_DIF[shape];
+    ctx.fillText('⭐'.repeat(diff)+'☆'.repeat(5-diff),cx,cy+42);
+    ctx.font='11px Arial'; ctx.fillStyle='rgba(255,255,255,0.3)';
+    ctx.fillText(`${SHAPE_N[shape]}점`,cx,cy+58);
+  });
+
+  drawBtn(BASE_W/2,BASE_H-68,200,50,'✓  시작하기',C.candy,'#fff');
+  drawBtn(BASE_W/2,BASE_H-18,120,34,'← 뒤로','#3d1a00','rgba(255,200,100,0.7)');
+  ctx.textAlign='left';
+}
+
+// ── 스크린: 카운트다운 ──────────────────────────────────────
+function drawCountdown(ts){
+  drawGameScene(ts);
+  const elapsed=(ts-countdownT)/1000;
+  if(elapsed>=3){ state='playing'; return; }
+  const n=Math.max(1,4-Math.ceil(elapsed));
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.45)'; ctx.fillRect(0,0,BASE_W,BASE_H);
+  const sc=1+0.35*(1-(elapsed%1));
+  ctx.translate(BASE_W/2,BASE_H/2); ctx.scale(sc,sc);
+  ctx.font='bold 96px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#ffcc00'; ctx.shadowColor='#ff8800'; ctx.shadowBlur=28;
+  ctx.fillText(n===4?'준비!':String(n),0,0);
+  ctx.restore();
+}
+
+// ── 스크린: 게임 장면 ───────────────────────────────────────
+function drawGameScene(ts){
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
+
+  if(shakeT>0){
+    ctx.save();
+    ctx.translate((Math.random()-0.5)*shakeT*2.2,(Math.random()-0.5)*shakeT*1.8);
+    shakeT--;
+  }
+  drawCandy(CANDY_CX,CANDY_CY,CANDY_R);
+  drawCracks();
+  drawShapeGuide(currentShape);
+  drawDotsAndTrail(ts);
+  if(shakeT>=0) ctx.restore();
+  drawParticles();
+  drawHUD();
+}
+
+// ── 스크린: 성공 ────────────────────────────────────────────
+function drawSuccess(){
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
+  drawParticles();
+  const cy=BASE_H*0.34;
+  drawCandy(CANDY_CX,cy,CANDY_R*0.84);
+  ctx.font='50px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(SHAPE_ICO[currentShape],CANDY_CX,cy);
+  ctx.textBaseline='alphabetic';
+  ctx.font='bold 34px Arial'; ctx.fillStyle=C.green;
+  ctx.shadowColor=C.green; ctx.shadowBlur=20; ctx.textAlign='center';
+  ctx.fillText('🎉 성공!',BASE_W/2,BASE_H*0.6);
+  ctx.shadowBlur=0;
+  ctx.font='bold 28px Arial'; ctx.fillStyle=C.gold;
+  ctx.fillText(`${finalScore}점`,BASE_W/2,BASE_H*0.675);
+  ctx.font='14px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
+  ctx.fillText(`남은 시간 ${Math.ceil(timeLeft)}초  ·  ${dots.length}개 완성`,BASE_W/2,BASE_H*0.73);
+  drawBtn(BASE_W/2,BASE_H*0.86,210,50,'💾 저장 & 랭킹 보기',C.candy,'#fff');
+  drawBtn(BASE_W/2,BASE_H*0.93,210,38,'🔄 다시 하기','#3d1a00',C.gold);
+  ctx.textAlign='left';
+}
+
+// ── 스크린: 실패 ────────────────────────────────────────────
+function drawFailed(){
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
+  ctx.save(); ctx.translate(CANDY_CX,BASE_H*0.34); ctx.rotate(0.08);
+  drawCandy(0,0,CANDY_R*0.82); drawCracks();
+  ctx.font='38px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('💔',0,0); ctx.restore();
+  ctx.font='bold 36px Arial'; ctx.fillStyle=C.red;
+  ctx.shadowColor=C.red; ctx.shadowBlur=16; ctx.textAlign='center';
+  ctx.fillText('💥 실패!',BASE_W/2,BASE_H*0.6); ctx.shadowBlur=0;
+  ctx.font='15px Arial'; ctx.fillStyle='rgba(255,255,255,0.6)';
+  ctx.fillText(`${currentDotIdx} / ${dots.length} 완료`,BASE_W/2,BASE_H*0.675);
+  drawBtn(BASE_W/2,BASE_H*0.77,210,50,'🔄 다시 도전!',C.candy,'#fff');
+  drawBtn(BASE_W/2,BASE_H*0.86,210,42,'모양 바꾸기','#3d1a00',C.gold);
+  drawBtn(BASE_W/2,BASE_H*0.94,210,36,'메인 메뉴','#1a0800','rgba(255,200,100,0.5)');
+  ctx.textAlign='left';
+}
+
+// ── 스크린: 랭킹 보드 ───────────────────────────────────────
+function drawLeaderboard(){
+  ctx.fillStyle=C.bg; ctx.fillRect(0,0,BASE_W,BASE_H);
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 26px Arial'; ctx.fillStyle=C.gold;
+  ctx.fillText('🏆 랭킹 보드',BASE_W/2,54);
+  const lb=getLB();
+  if(lb.length===0){
+    ctx.font='16px Arial'; ctx.fillStyle='rgba(255,255,255,0.32)';
+    ctx.fillText('아직 기록이 없어요',BASE_W/2,BASE_H/2-10);
+    ctx.fillText('게임을 플레이해보세요!',BASE_W/2,BASE_H/2+22);
+  } else {
+    lb.forEach((e,i)=>{
+      const rowY=84+i*54;
+      ctx.fillStyle=i<3?'rgba(200,130,10,0.16)':'rgba(255,255,255,0.04)';
+      rRect(18,rowY,BASE_W-36,46,8); ctx.fill();
+      const medal=['🥇','🥈','🥉'][i]||`${i+1}.`;
+      ctx.font=i<3?'bold 20px Arial':'16px Arial'; ctx.textAlign='left';
+      ctx.fillStyle='#fff'; ctx.textBaseline='middle';
+      ctx.fillText(medal,30,rowY+23);
+      ctx.font=i<3?'bold 14px Arial':'13px Arial';
+      ctx.fillStyle=i<3?C.gold:'rgba(255,255,255,0.8)';
+      ctx.fillText(e.name,70,rowY+15);
+      ctx.font='11px Arial'; ctx.fillStyle='rgba(255,200,100,0.5)';
+      ctx.fillText(`${SHAPE_ICO[e.shape]||''} ${SHAPE_KO[e.shape]||''}  ·  ${e.date}`,70,rowY+34);
+      ctx.textAlign='right';
+      ctx.font=i<3?'bold 19px Arial':'15px Arial';
+      ctx.fillStyle=i<3?C.gold:'rgba(255,255,255,0.8)';
+      ctx.fillText(`${e.score}점`,BASE_W-22,rowY+23);
+    });
+  }
+  drawBtn(BASE_W/2,BASE_H-48,180,46,'← 메인 메뉴','#3d1a00',C.gold);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+
+// ── 입력 이벤트 ────────────────────────────────────────────
+function getXY(e){
+  const r=canvas.getBoundingClientRect();
+  if(e.touches) return {x:(e.touches[0].clientX-r.left)/scale,y:(e.touches[0].clientY-r.top)/scale};
+  return {x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale};
+}
+canvas.addEventListener('touchstart',e=>{e.preventDefault();const{x,y}=getXY(e);handleTap(x,y);},{passive:false});
+canvas.addEventListener('mousedown',e=>{const{x,y}=getXY(e);handleTap(x,y);});
+
+// ── 메인 루프 ───────────────────────────────────────────────
+function loop(ts){
+  ctx.clearRect(0,0,BASE_W,BASE_H);
+  if(state!=='menu') updateParticles();
+  switch(state){
+    case 'menu':        drawMenu(ts);       break;
+    case 'select':      drawSelect();        break;
+    case 'countdown':   drawCountdown(ts);   break;
+    case 'playing':     drawGameScene(ts);   break;
+    case 'success':     drawSuccess();       break;
+    case 'failed':      drawFailed();        break;
+    case 'leaderboard': drawLeaderboard();   break;
+  }
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
