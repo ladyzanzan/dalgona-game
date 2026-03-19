@@ -80,13 +80,26 @@ let scale = 1;
 function resizeCanvas() {
   const W = window.innerWidth;
   const H = window.innerHeight;
-  // 너비 기준으로 꽉 채움 → 달고나가 화면 크기에 비례해서 커짐
-  scale  = W / BASE_W;
-  BASE_H = Math.ceil(H / scale);   // 실제 화면 비율대로 가상 높이 결정
-  canvas.width  = W;
-  canvas.height = H;
+
+  if (H >= W * 1.1) {
+    /* ── 세로 모드 (모바일·타블렛 세로) ──────────────────────
+       너비를 꽉 채우고, 가상 높이는 실제 화면 비율에 맞춤.
+       달고나가 화면 너비의 74%를 차지해 크게 보임.          */
+    scale  = W / BASE_W;
+    BASE_H = Math.ceil(H / scale);
+    canvas.width  = W;
+    canvas.height = H;
+  } else {
+    /* ── 가로 모드 (PC·노트북·태블릿 가로) ───────────────────
+       400×700 기준 레이아웃을 화면 안에 딱 맞게 축소.
+       가로로 넘치거나 세로 스크롤이 생기지 않음.            */
+    BASE_H = 700;
+    scale  = Math.min(W / BASE_W, H / BASE_H);
+    canvas.width  = Math.round(BASE_W * scale);
+    canvas.height = Math.round(BASE_H * scale);
+  }
+
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  // 캔버스 크기가 바뀔 때 게임 요소 위치도 재계산
   initLayout();
 }
 window.addEventListener('resize', resizeCanvas);
@@ -355,91 +368,51 @@ function drawShapeGuide(shape){
   ctx.stroke(); ctx.setLineDash([]); ctx.restore();
 }
 
-// ── 인접 여부 판단 ──────────────────────────────────────────
-/* 첫 탭은 어디서나 가능. 이후엔 이미 찍은 점의 바로 옆(±1 인덱스)만 허용.
-   원·별·하트처럼 닫힌 도형은 끝과 시작도 이어짐(wrap). */
-const CLOSED_SHAPES = new Set(['circle','star','heart','triangle']);
-
-function isAvailable(idx) {
-  if(hitSet.size === 0) return true;   // 첫 탭 — 아무 데나
-  const n = dots.length;
-  for(const hi of hitSet) {
-    let diff = Math.abs(idx - hi);
-    if(CLOSED_SHAPES.has(currentShape)) diff = Math.min(diff, n - diff);
-    if(diff <= 1) return true;         // 인접 점
-  }
-  return false;
-}
+// ── 인접 제한 없음 ─────────────────────────────────────────
+/* 실제 달고나 게임과 동일:
+   모양 위의 점은 순서·위치 상관없이 아무 데나 찍어도 OK.
+   캔디 몸통(점 근처가 아닌 곳)을 찍었을 때만 균열 발생. */
 
 // ── 핵심 시각화: 점·궤적·바늘 ─────────────────────────────
 function drawDotsAndTrail(ts) {
   const total = dots.length;
-  const pulse = 0.55 + 0.45 * Math.sin(ts * 0.006);
+  const pulse = 0.6 + 0.4 * Math.sin(ts * 0.005);
 
-  /* ① 찍힌 점들 사이 황금 궤적선 — 인덱스 순서대로 연결 */
+  /* ① 찍힌 점들을 인덱스 순으로 연결 — 모양이 점점 살아남 */
   if(hitSet.size > 1){
+    const sorted = [...hitSet].sort((a,b) => a-b);
     ctx.save();
-    // 연속 구간 찾아서 선으로 연결
-    const sorted = [...hitSet].sort((a,b)=>a-b);
-    ctx.strokeStyle='rgba(255,200,0,0.85)';
-    ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.lineJoin='round';
-    ctx.shadowColor='rgba(255,180,0,0.45)'; ctx.shadowBlur=6;
+    ctx.strokeStyle = 'rgba(255,200,0,0.9)';
+    ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(255,180,0,0.5)'; ctx.shadowBlur = 7;
     ctx.beginPath();
-    let segStart = true;
-    for(let k=0;k<sorted.length;k++){
-      const i=sorted[k];
-      const d=dots[i];
-      if(segStart){ ctx.moveTo(d.x,d.y); segStart=false; }
+    let firstSeg = true;
+    for(let k = 0; k < sorted.length; k++){
+      const d = dots[sorted[k]];
+      if(firstSeg){ ctx.moveTo(d.x, d.y); firstSeg = false; }
       else {
-        // 이전 인덱스와 인접하면 이어 그리기, 아니면 새 세그먼트
-        const prev=sorted[k-1];
-        const gap=Math.min(Math.abs(i-prev), total-Math.abs(i-prev));
-        if(gap<=1) ctx.lineTo(d.x,d.y);
-        else { ctx.moveTo(d.x,d.y); }
+        // 인덱스가 연속할 때만 선으로 연결, 떨어진 구간은 새 세그먼트
+        const gap = sorted[k] - sorted[k-1];
+        if(gap === 1) ctx.lineTo(d.x, d.y);
+        else          ctx.moveTo(d.x, d.y);
       }
     }
     ctx.stroke(); ctx.restore();
   }
 
-  /* ② 전체 점 그리기 */
-  for(let i=0;i<total;i++){
-    const d=dots[i];
-    const hit  = hitSet.has(i);
-    const avail= !hit && isAvailable(i);
-
-    if(hit){
+  /* ② 점 그리기 — 찍힌 것: 금색 / 안 찍힌 것: 흰 점 (모두 동등하게 보임) */
+  for(let i = 0; i < total; i++){
+    const d = dots[i];
+    if(hitSet.has(i)){
       /* 찍힌 점 — 작은 금색 */
-      ctx.beginPath(); ctx.arc(d.x,d.y,2.4,0,Math.PI*2);
-      ctx.fillStyle='rgba(255,200,0,0.8)'; ctx.fill();
-    } else if(avail){
-      /* 찍을 수 있는 점 — 밝은 흰 점 + 맥동 */
-      ctx.beginPath(); ctx.arc(d.x,d.y,3.2*pulse,0,Math.PI*2);
-      ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fill();
-      ctx.strokeStyle='rgba(255,220,80,0.5)'; ctx.lineWidth=1; ctx.stroke();
+      ctx.beginPath(); ctx.arc(d.x, d.y, 2.6, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,200,0,0.85)'; ctx.fill();
     } else {
-      /* 아직 못 찍는 점 — 매우 희미 */
-      ctx.beginPath(); ctx.arc(d.x,d.y,2,0,Math.PI*2);
-      ctx.fillStyle='rgba(255,255,255,0.14)'; ctx.fill();
+      /* 안 찍힌 점 — 흰 점, 맥동 (어디서나 찍을 수 있음을 표시) */
+      const r = 2.8 + 0.6 * Math.sin(ts * 0.004 + i * 0.3);
+      ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.82)'; ctx.fill();
     }
-  }
-
-  /* ③ 찍을 수 있는 양쪽 끝 점에 맥동 링 (가이드) */
-  if(hitSet.size > 0 && hitSet.size < total){
-    const sorted=[...hitSet].sort((a,b)=>a-b);
-    const candidates=[];
-    // 체인의 양 끝 인덱스 찾기
-    for(const i of [sorted[0]-1, sorted[sorted.length-1]+1]){
-      const wrapped = ((i % total) + total) % total;
-      if(!hitSet.has(wrapped) && isAvailable(wrapped)) candidates.push(wrapped);
-    }
-    candidates.forEach(i=>{
-      const d=dots[i];
-      ctx.save();
-      ctx.beginPath(); ctx.arc(d.x,d.y,9*pulse+2,0,Math.PI*2);
-      ctx.strokeStyle=`rgba(255,220,0,${0.3*pulse})`;
-      ctx.lineWidth=2; ctx.stroke();
-      ctx.restore();
-    });
   }
 
   /* ⑤ 바늘 커서 — 마지막 탭 위치 */
@@ -604,17 +577,16 @@ function handleTap(tx,ty){
   }
 }
 
-/* 핵심 메카닉: 자유 시작 + 인접 확장 찍기
-   - 첫 탭은 아무 점이나 OK
-   - 이후엔 이미 찍은 점의 ±1 인덱스 옆 점만 인식
-   - 캔디 안을 잘못 찍으면 균열 */
+/* 핵심 메카닉: 달고나 바늘 찍기 (순서·위치 자유)
+   ✅ 모양 위의 점 — 어디서나, 어떤 순서로든 찍기 가능
+   💥 점 근처가 아닌 캔디 몸통 — 찍으면 균열 발생
+   → "정확히 선 위를 찍어야 한다"는 긴장감이 핵심 */
 function gameTap(tx,ty){
   needleX=tx; needleY=ty; needleAlpha=1.0;
 
-  const hitR=HIT_R_BASE[currentShape];
-  let hitAny=false;
+  const hitR = HIT_R_BASE[currentShape];
 
-  // 탭 위치에서 가장 가까운 미찍 점 찾기
+  // 가장 가까운 미찍 점 찾기
   let nearestIdx=-1, nearestDist=Infinity;
   dots.forEach((d,i)=>{
     if(hitSet.has(i)) return;
@@ -623,18 +595,12 @@ function gameTap(tx,ty){
   });
 
   if(nearestIdx>=0 && nearestDist<=hitR){
-    if(isAvailable(nearestIdx)){
-      /* ✅ 인접 점 찍기 성공 */
-      hitSet.add(nearestIdx);
-      spawnHit(dots[nearestIdx].x,dots[nearestIdx].y);
-      hitAny=true;
-      if(hitSet.size>=dots.length) setTimeout(()=>endGame(true),280);
-    }
-    // 인접하지 않은 점은 무반응 (균열 없음)
-  }
-
-  if(!hitAny){
-    /* 점 근처가 아닌 캔디 내부를 찍음 → 균열 */
+    /* ✅ 점 위 정확히 찍음 — 순서 무관하게 성공 */
+    hitSet.add(nearestIdx);
+    spawnHit(dots[nearestIdx].x, dots[nearestIdx].y);
+    if(hitSet.size>=dots.length) setTimeout(()=>endGame(true),280);
+  } else {
+    /* 점 근처가 아닌 캔디 안쪽 → 균열 */
     const fromCenter=Math.hypot(tx-CANDY_CX,ty-CANDY_CY);
     if(fromCenter<CANDY_R-6){
       addCrack(tx,ty);
